@@ -22,9 +22,14 @@ if CoreGui:FindFirstChild("Rayfield") then
     CoreGui.Rayfield:Destroy()
 end
 
-if CoreGui:FindFirstChild("MetaHubUnnamed") then
-    CoreGui.MetaHubUnnamed:Destroy()
+-- 날씨 파티클 전용 컨테이너 생성/초기화
+local WeatherFolder = workspace:FindFirstChild("mineminyee_WeatherFolder")
+if WeatherFolder then
+    WeatherFolder:Destroy()
 end
+WeatherFolder = Instance.new("Folder")
+WeatherFolder.Name = "mineminyee_WeatherFolder"
+WeatherFolder.Parent = workspace
 
 -- ============================================
 -- SERVICES & LOCAL VARIABLES
@@ -47,7 +52,9 @@ local SILENT_AIM_ENABLED = false
 local THIRD_PERSON_ENABLED = false
 local NO_RECOIL_ENABLED = false
 local rbEnabled = false
+local DESYNC_ENABLED = false -- 독립된 Desync 상태 변수
 local rb2Enabled = false
+local rb3Enabled = false
 local FULL_AUTO_ENABLED = false
 local AUTO_MATCH_ENABLED = false
 local AUTO_MATCH_MODE = "1v1"
@@ -62,14 +69,23 @@ local metaTableHooked = false
 local oldNamecall = nil
 
 -- Rage Bot 1 Variables
-local rbChar, rbHrp, rbHum, rbTarget, rbConnection
+local rb1Target = nil
+local rb1Conn1 = nil
+local rb1OldStartShooting = nil
+
+-- Standalone Desync Variables
+local desyncConn = nil
 
 -- Rage Bot 2 Variables
-local rb2Mode = "OverHead"
-local rb2MinStuds = 15
-local rb2MaxStuds = 300
-local rb2LastTargetHrp = nil
 local rb2Connection = nil
+local rb2MinStuds = 100
+local rb2MaxStuds = 100
+local rb2Mode = "UnderBottom"
+local lastTargetHrp = nil
+
+-- Rage Bot 3 Variables
+local rb3Connection = nil
+local rb3Distance = 3
 
 -- Full Auto Variables
 local faTargetPlayer, faGravityConnection, faSpinConnection, faCameraConnection, faAutoClickConnection
@@ -85,17 +101,19 @@ local FA_RETREAT_INTERVAL = 15
 local faLastRetreatTime = 0
 local faLastHealth = 100
 
--- No Recoil Variables
+-- No Recoil Variables & Cache
 local nrGunModule, nrOriginalRecoil, nrOriginalStartShooting, nrOriginal_LocalTracers, nrItemLibrary
+local nrOriginalItemStats = {}
 
 -- Cooldown / Weapon Data Cache Variables
 local originalData = {}
 
 -- Player Movement & Third Person Variables
 local flyEnabled, flySpeed = false, 50
-local flyLoopConnection = nil
+local flyLoopThread = nil
+local bv, bg
 local noclipEnabled, infJumpEnabled = false, false
-local bodyVelocity, bodyGyro, noclipConnection, thirdPersonWheelConnection
+local noclipConnection, thirdPersonWheelConnection
 local distance, heightOffset, sideOffset = 12, 2.5, 0
 local MIN_DISTANCE, MAX_DISTANCE, ZOOM_SPEED = 3, 30, 1.5
 
@@ -107,10 +125,10 @@ local rotationSpeed = 20
 local angle = 0
 local originalC0s = {}
 
--- UI MainFrame
+-- Helper: UI MainFrame 참조
 local MainFrame = { Visible = false }
 
--- 환경 제어 변수
+-- 통합 환경 제어 상태 변수 (Shader & Skybox & Water & Weather)
 local envConfig = {
     shaderEnabled = false,
     skyboxEnabled = false,
@@ -123,7 +141,11 @@ local envOriginalMaterials = {}
 local currentSkybox = nil
 local originalWaterProps = {}
 local WaterTerrain = workspace:FindFirstChildOfClass("Terrain")
-local nightLoopConnection = nil
+local nightConnection = nil
+
+-- 동적 색상 제어 (Pulse Color Elements)
+local dynamicPrimaryElements = {}
+local dynamicAccentElements = {}
 
 -- ============================================
 -- MODULAR CONFIG SYSTEM
@@ -154,8 +176,9 @@ function ConfigSystem:Save(fileName)
             AimTarget = AIM_TARGET_MODE,
             NoRecoil = NO_RECOIL_ENABLED,
             RageBot = rbEnabled,
+            Desync = DESYNC_ENABLED,
             RageBot2 = rb2Enabled,
-            RageBot2Mode = rb2Mode,
+            RageBot3 = rb3Enabled,
             FullAuto = FULL_AUTO_ENABLED,
             Fly = flyEnabled,
             FlySpeed = flySpeed,
@@ -194,8 +217,10 @@ function ConfigSystem:Load(fileName)
         if f.SilentAim ~= nil and self.UIElements["Silent Aim (사이런트 에임)"] then self.UIElements["Silent Aim (사이런트 에임)"](f.SilentAim) end
         if f.AimTarget ~= nil and self.UIElements["Aim Target (에임 타겟)"] then self.UIElements["Aim Target (에임 타겟)"](f.AimTarget) end
         if f.NoRecoil ~= nil and self.UIElements["No Recoil (총 반동 없애기)"] then self.UIElements["No Recoil (총 반동 없애기)"](f.NoRecoil) end
-        if f.RageBot ~= nil and self.UIElements["Rage Bot (레이지봇 1)"] then self.UIElements["Rage Bot (레이지봇 1)"](f.RageBot) end
-        if f.RageBot2 ~= nil and self.UIElements["Rage Bot 2 (메타 레이지봇)"] then self.UIElements["Rage Bot 2 (메타 레이지봇)"](f.RageBot2) end
+        if f.RageBot ~= nil and self.UIElements["Rage Bot 1 (레이지봇 1)"] then self.UIElements["Rage Bot 1 (레이지봇 1)"](f.RageBot) end
+        if f.Desync ~= nil and self.UIElements["Desync (디싱크)"] then self.UIElements["Desync (디싱크)"](f.Desync) end
+        if f.RageBot2 ~= nil and self.UIElements["Rage Bot 2 (레이지봇 2)"] then self.UIElements["Rage Bot 2 (레이지봇 2)"](f.RageBot2) end
+        if f.RageBot3 ~= nil and self.UIElements["Rage Bot 3 (레이지봇 3)"] then self.UIElements["Rage Bot 3 (레이지봇 3)"](f.RageBot3) end
         if f.FullAuto ~= nil and self.UIElements["Full Auto (풀 오토)"] then self.UIElements["Full Auto (풀 오토)"](f.FullAuto) end
         if f.Fly ~= nil and self.UIElements["Fly (비행)"] then self.UIElements["Fly (비행)"](f.Fly) end
         if f.FlySpeed ~= nil and self.UIElements["Fly 속도"] then self.UIElements["Fly 속도"](f.FlySpeed) end
@@ -217,7 +242,7 @@ function ConfigSystem:Load(fileName)
 end
 
 -- ============================================
--- UI INITIALIZATION & HUD SYSTEM
+-- UI INITIALIZATION & COLOR PULSE SYSTEM
 -- ============================================
 local Library = {
     Enabled = true,
@@ -242,11 +267,39 @@ ModalSink.Parent = ScreenGui
 
 local CanvasGroup = Instance.new("CanvasGroup")
 CanvasGroup.Name = "MainCanvas"
-CanvasGroup.Size = UDim2.new(0, 1280, 0, 520)
-CanvasGroup.Position = UDim2.new(0.5, -640, 0, 15)
+CanvasGroup.Size = UDim2.new(0, 1320, 0, 520)
+CanvasGroup.Position = UDim2.new(0.5, -660, 0, 15)
 CanvasGroup.BackgroundTransparency = 1
 CanvasGroup.GroupTransparency = 0
 CanvasGroup.Parent = ScreenGui
+
+-- 테마 색상 애니메이션 루프
+task.spawn(function()
+    local basePrimary = Color3.fromRGB(115, 130, 220)
+    local baseAccent = Color3.fromRGB(160, 100, 255)
+    local t = 0
+
+    while true do
+        t = t + RunService.Heartbeat:Wait()
+        local factor = (math.sin(t * 1.5) + 1) / 2
+        local dimFactor = 0.4 + (factor * 0.6)
+        
+        local currentPrimary = Color3.new(basePrimary.R * dimFactor, basePrimary.G * dimFactor, basePrimary.B * dimFactor)
+        local currentAccent = Color3.new(baseAccent.R * dimFactor, baseAccent.G * dimFactor, baseAccent.B * dimFactor)
+
+        for obj, prop in pairs(dynamicPrimaryElements) do
+            if obj and obj.Parent then
+                obj[prop] = currentPrimary
+            end
+        end
+
+        for obj, prop in pairs(dynamicAccentElements) do
+            if obj and obj.Parent then
+                obj[prop] = currentAccent
+            end
+        end
+    end
+end)
 
 -- Keybinds/ArrayList HUD
 local hudFrame = Instance.new("Frame")
@@ -277,14 +330,19 @@ local function updateKeybindsList()
     if SILENT_AIM_ENABLED then table.insert(activeFeatures, "Silent Aim") end
     if NO_RECOIL_ENABLED then table.insert(activeFeatures, "No Recoil") end
     if rbEnabled then table.insert(activeFeatures, "Rage Bot 1") end
-    if rb2Enabled then table.insert(activeFeatures, "Rage Bot 2 (" .. rb2Mode .. ")") end
+    if DESYNC_ENABLED then table.insert(activeFeatures, "Desync") end
+    if rb2Enabled then table.insert(activeFeatures, "Rage Bot 2") end
+    if rb3Enabled then table.insert(activeFeatures, "Rage Bot 3") end
     if FULL_AUTO_ENABLED then table.insert(activeFeatures, "Full Auto") end
+    
     if flyEnabled then table.insert(activeFeatures, "Fly (" .. flySpeed .. ")") end
     if noclipEnabled then table.insert(activeFeatures, "Noclip") end
     if infJumpEnabled then table.insert(activeFeatures, "Infinite Jump") end
     if THIRD_PERSON_ENABLED then table.insert(activeFeatures, "Third Person") end
+    
     if isSpinning then table.insert(activeFeatures, "Spin Anim") end
     if AUTO_MATCH_ENABLED then table.insert(activeFeatures, "Auto Match (" .. AUTO_MATCH_MODE .. ")") end
+    
     if meshWrappingActive then table.insert(activeFeatures, "Mesh Wrapping") end
     if envConfig.shaderEnabled then table.insert(activeFeatures, "All Shaders [Pad1]") end
     if envConfig.skyboxEnabled then table.insert(activeFeatures, "Skybox [Pad2]") end
@@ -309,9 +367,9 @@ local function updateKeybindsList()
         local border = Instance.new("Frame")
         border.Size = UDim2.new(0, 4, 1, 0)
         border.Position = UDim2.new(1, -4, 0, 0)
-        border.BackgroundColor3 = Color3.fromRGB(160, 100, 255)
         border.BorderSizePixel = 0
         border.Parent = itemFrame
+        dynamicAccentElements[border] = "BackgroundColor3"
 
         local txt = Instance.new("TextLabel")
         txt.Size = UDim2.new(1, -10, 1, 0)
@@ -335,17 +393,17 @@ local function ToggleUI(state)
     if state then
         UserInputService.OverrideMouseIconBehavior = Enum.OverrideMouseIconBehavior.ForceShow
         CanvasGroup.Visible = true
-        CanvasGroup.Position = UDim2.new(0.5, -640, 0, -10)
+        CanvasGroup.Position = UDim2.new(0.5, -660, 0, -10)
         CanvasGroup.GroupTransparency = 1
         
         TweenService:Create(CanvasGroup, TweenInfoAnim, {
-            Position = UDim2.new(0.5, -640, 0, 15),
+            Position = UDim2.new(0.5, -660, 0, 15),
             GroupTransparency = 0
         }):Play()
     else
         UserInputService.OverrideMouseIconBehavior = Enum.OverrideMouseIconBehavior.None
         local tween = TweenService:Create(CanvasGroup, TweenInfoAnim, {
-            Position = UDim2.new(0.5, -640, 0, -10),
+            Position = UDim2.new(0.5, -660, 0, -10),
             GroupTransparency = 1
         })
         tween:Play()
@@ -385,25 +443,17 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
--- 수평 스크롤 컨테이너 추가 (컬럼이 가려지는 문제 방지)
-local MainScroll = Instance.new("ScrollingFrame")
-MainScroll.Size = UDim2.new(1, 0, 1, 0)
-MainScroll.BackgroundTransparency = 1
-MainScroll.BorderSizePixel = 0
-MainScroll.ScrollBarThickness = 6
-MainScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-MainScroll.Parent = CanvasGroup
+local Container = Instance.new("Frame")
+Container.Size = UDim2.new(1, 0, 1, 0)
+Container.BackgroundTransparency = 1
+Container.Parent = CanvasGroup
 
 local Layout = Instance.new("UIListLayout")
 Layout.FillDirection = Enum.FillDirection.Horizontal
-Layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+Layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 Layout.SortOrder = Enum.SortOrder.LayoutOrder
-Layout.Padding = UDim.new(0, 8)
-Layout.Parent = MainScroll
-
-Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    MainScroll.CanvasSize = UDim2.new(0, Layout.AbsoluteContentSize.X + 10, 0, 0)
-end)
+Layout.Padding = UDim.new(0, 10)
+Layout.Parent = Container
 
 local function createNotification(text)
     print("[mineminyee Control Panel] " .. text)
@@ -412,11 +462,11 @@ end
 function Library:CreateColumn(colName)
     local ColumnFrame = Instance.new("Frame")
     ColumnFrame.Name = colName
-    ColumnFrame.Size = UDim2.new(0, 195, 0, 500)
+    ColumnFrame.Size = UDim2.new(0, 200, 0, 500)
     ColumnFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
     ColumnFrame.BorderSizePixel = 0
     ColumnFrame.LayoutOrder = #Library.ColumnList + 1
-    ColumnFrame.Parent = MainScroll
+    ColumnFrame.Parent = Container
 
     local Corner = Instance.new("UICorner")
     Corner.CornerRadius = UDim.new(0, 8)
@@ -437,7 +487,7 @@ function Library:CreateColumn(colName)
     ItemList.BackgroundTransparency = 1
     ItemList.BorderSizePixel = 0
     ItemList.ScrollBarThickness = 2
-    ItemList.ClipsDescendants = true
+    ItemList.ClipsDescendants = false
     ItemList.Parent = ColumnFrame
 
     local ItemLayout = Instance.new("UIListLayout")
@@ -499,7 +549,6 @@ function Library:CreateColumn(colName)
         local SwitchBtn = Instance.new("TextButton")
         SwitchBtn.Size = UDim2.new(0, 30, 0, 14)
         SwitchBtn.Position = UDim2.new(1, -34, 0.5, -7)
-        SwitchBtn.BackgroundColor3 = state and Color3.fromRGB(115, 130, 220) or Color3.fromRGB(40, 40, 48)
         SwitchBtn.BorderSizePixel = 0
         SwitchBtn.Text = ""
         SwitchBtn.Parent = Frame
@@ -522,13 +571,16 @@ function Library:CreateColumn(colName)
         local function UpdateSwitch(newState)
             state = newState
             if state then
-                TweenService:Create(SwitchBtn, TweenInfoAnim, {BackgroundColor3 = Color3.fromRGB(115, 130, 220)}):Play()
+                dynamicPrimaryElements[SwitchBtn] = "BackgroundColor3"
                 TweenService:Create(Dot, TweenInfoAnim, {Position = UDim2.new(1, -12, 0.5, -5)}):Play()
             else
-                TweenService:Create(SwitchBtn, TweenInfoAnim, {BackgroundColor3 = Color3.fromRGB(40, 40, 48)}):Play()
+                dynamicPrimaryElements[SwitchBtn] = nil
+                SwitchBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
                 TweenService:Create(Dot, TweenInfoAnim, {Position = UDim2.new(0, 2, 0.5, -5)}):Play()
             end
         end
+
+        UpdateSwitch(state)
 
         SwitchBtn.MouseButton1Click:Connect(function()
             UpdateSwitch(not state)
@@ -593,9 +645,9 @@ function Library:CreateColumn(colName)
 
         local Fill = Instance.new("Frame")
         Fill.Size = UDim2.new((default - min)/(max - min), 0, 1, 0)
-        Fill.BackgroundColor3 = Color3.fromRGB(115, 130, 220)
         Fill.BorderSizePixel = 0
         Fill.Parent = Track
+        dynamicPrimaryElements[Fill] = "BackgroundColor3"
 
         local Knob = Instance.new("Frame")
         Knob.Size = UDim2.new(0, 8, 0, 8)
@@ -738,7 +790,7 @@ function Library:CreateColumn(colName)
 end
 
 -- ============================================
--- 환경 제어 & 로직 보조 함수들
+-- 환경 제어, 유리 쉐이더, 스카이박스, HD 워터 & 낮/밤 제어
 -- ============================================
 local function isPlayerPart(part)
     for _, player in pairs(Players:GetPlayers()) do
@@ -868,13 +920,12 @@ local function updateLightingSettings()
     local cc = Lighting:FindFirstChild("ShaderCC")
     Lighting.GlobalShadows = true
 
-    if nightLoopConnection then
-        nightLoopConnection:Disconnect()
-        nightLoopConnection = nil
+    if nightConnection then
+        nightConnection:Disconnect()
+        nightConnection = nil
     end
 
     if envConfig.timeOfDay == "Day" then
-        Lighting:SetMinutesAfterMidnight(14 * 60)
         Lighting.ClockTime = 14
         Lighting.Brightness = 3.0
         Lighting.Ambient = Color3.fromRGB(128, 128, 128)
@@ -885,8 +936,7 @@ local function updateLightingSettings()
             cc.Contrast = 0.0
         end
     elseif envConfig.timeOfDay == "Night" then
-        local function forceNight()
-            Lighting:SetMinutesAfterMidnight(0)
+        local function applyNightProps()
             Lighting.ClockTime = 0
             Lighting.Brightness = 0.5
             Lighting.Ambient = Color3.fromRGB(20, 30, 50)
@@ -898,11 +948,11 @@ local function updateLightingSettings()
             end
         end
 
-        forceNight()
+        applyNightProps()
 
-        nightLoopConnection = RunService.RenderStepped:Connect(function()
+        nightConnection = Lighting:GetPropertyChangedSignal("ClockTime"):Connect(function()
             if envConfig.timeOfDay == "Night" and Lighting.ClockTime ~= 0 then
-                forceNight()
+                applyNightProps()
             end
         end)
     end
@@ -910,9 +960,96 @@ local function updateLightingSettings()
     updateKeybindsList()
 end
 
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    
+    if input.KeyCode == Enum.KeyCode.KeypadOne then
+        envConfig.shaderEnabled = not envConfig.shaderEnabled
+        updateLightingSettings()
+    elseif input.KeyCode == Enum.KeyCode.KeypadTwo then
+        envConfig.skyboxEnabled = not envConfig.skyboxEnabled
+        toggleSkybox()
+    elseif input.KeyCode == Enum.KeyCode.KeypadThree then
+        envConfig.waterEnabled = not envConfig.waterEnabled
+        toggleWater()
+    elseif input.KeyCode == Enum.KeyCode.KeypadFour then
+        envConfig.timeOfDay = (envConfig.timeOfDay == "Day") and "Night" or "Day"
+        updateLightingSettings()
+    end
+end)
+
+-- 날씨 파티클 루프
+RunService.Heartbeat:Connect(function()
+    if envConfig.weatherType == "None" then
+        if WeatherFolder and #WeatherFolder:GetChildren() > 0 then
+            WeatherFolder:ClearAllChildren()
+        end
+        return
+    end
+
+    local isRain = (envConfig.weatherType == "Rain")
+    local isStorm = envConfig.stormEnabled
+
+    local spawnRate = isRain and (isStorm and 15 or 4) or (isStorm and 8 or 2)
+
+    for _ = 1, spawnRate do
+        local part = Instance.new("Part")
+        part.Anchored = false
+        part.CanCollide = false
+        part.CanQuery = false
+        
+        local fallVelocity = Vector3.zero
+
+        if isRain then
+            part.Shape = Enum.PartType.Block
+            part.Material = Enum.Material.ForceField
+            part.Color = Color3.fromRGB(200, 230, 255)
+            
+            local length = isStorm and 6.0 or 3.0
+            part.Size = Vector3.new(0.12, length, 0.12)
+            part.Transparency = 0.2
+
+            local speedY = isStorm and -250 or -120
+            local slightWindX = math.random(-5, 5)
+            local slightWindZ = math.random(-5, 5)
+            fallVelocity = Vector3.new(slightWindX, speedY, slightWindZ)
+        else
+            part.Shape = Enum.PartType.Ball
+            part.Material = Enum.Material.SmoothPlastic
+            part.Color = Color3.fromRGB(255, 255, 255)
+            local size = isStorm and (math.random(6, 14) / 10) or (math.random(3, 7) / 10)
+            part.Size = Vector3.new(size, size, size)
+            part.Transparency = 0.1
+            
+            if isStorm then
+                local windX = math.random(-80, -30)
+                local windZ = math.random(-80, -30)
+                fallVelocity = Vector3.new(windX, -25, windZ)
+            else
+                local windX = math.random(-10, 10)
+                local windZ = math.random(-10, 10)
+                fallVelocity = Vector3.new(windX, -15, windZ)
+            end
+        end
+
+        local spawnHeight = isRain and 90 or 60
+        local spawnPos = Camera.CFrame.Position + Vector3.new(math.random(-120, 120), spawnHeight, math.random(-120, 120))
+        part.CFrame = CFrame.new(spawnPos)
+        part.Parent = WeatherFolder
+
+        local bv = Instance.new("BodyVelocity")
+        bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+        bv.Velocity = fallVelocity
+        bv.Parent = part
+
+        Debris:AddItem(part, 2)
+    end
+end)
+
 -- ============================================
--- MAIN LOGICS (AIM, RAGEBOT, FULLAUTO)
+-- MAIN LOGICS (AIM, DESYNC, RAGEBOTS, FULLAUTO 등)
 -- ============================================
+
 local function getTeamID(player)
     if not player then return nil end
     local teamID = player:GetAttribute("TeamID")
@@ -982,6 +1119,7 @@ local function startRandomAimTimer()
 end
 startRandomAimTimer()
 
+-- SILENT AIM & HOOK
 local function isVisibleTarget(targetPart)
     if not targetPart then return false end
     local myChar = LocalPlayer.Character
@@ -1077,84 +1215,171 @@ local function setupSilentAimHook()
 end
 setupSilentAimHook()
 
--- RAGE BOT 1
-local function rbUpdateCharacterRefs()
-    rbChar = LocalPlayer.Character
-    if rbChar then
-        rbHrp = rbChar:WaitForChild("HumanoidRootPart", 5)
-        rbHum = rbChar:WaitForChild("Humanoid", 5)
+-- STANDALONE DESYNC LOGIC
+local function startStandaloneDesync()
+    if desyncConn then desyncConn:Disconnect() end
+    DESYNC_ENABLED = true
+    
+    desyncConn = RunService.Heartbeat:Connect(function()
+        if not DESYNC_ENABLED then return end
+        local myChar = LocalPlayer.Character
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if not myRoot then return end
+        
+        -- 가장 가까운 적을 탐색하여 타겟 설정
+        local target = rb1Target
+        if not target then
+            local myPos = myRoot.Position
+            local closestDist = math.huge
+            for _, player in pairs(Players:GetPlayers()) do
+                if isEnemy(player) and player.Character then
+                    local root = player.Character:FindFirstChild("HumanoidRootPart")
+                    if root then
+                        local dist = (myPos - root.Position).Magnitude
+                        if dist < closestDist then
+                            closestDist = dist
+                            target = player
+                        end
+                    end
+                end
+            end
+        end
+        
+        local targetRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        if not targetRoot then return end
+        
+        local originalCFrame = myRoot.CFrame
+        local originalVelocity = myRoot.Velocity
+        local originalRotVelocity = myRoot.RotVelocity
+        
+        myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -5, 0)
+        
+        RunService:BindToRenderStep("Restore_Desync", 101, function()
+            if myRoot and myRoot.Parent then
+                myRoot.CFrame = originalCFrame
+                myRoot.Velocity = originalVelocity
+                myRoot.RotVelocity = originalRotVelocity
+            end
+            RunService:UnbindFromRenderStep("Restore_Desync")
+        end)
+    end)
+end
+
+local function stopStandaloneDesync()
+    DESYNC_ENABLED = false
+    if desyncConn then
+        desyncConn:Disconnect()
+        desyncConn = nil
     end
 end
 
-local function rbFindNearestPlayer()
-    if not rbHrp then return nil end
-    local nearest, minDist = nil, math.huge
-    for _, p in pairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character and isEnemy(p) then
-            local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
-            local pH = p.Character:FindFirstChild("Humanoid")
-            if pHrp and pH and pH.Health > 0 then
-                local dist = (rbHrp.Position - pHrp.Position).Magnitude
-                if dist < minDist then
-                    minDist = dist
-                    nearest = p
+-- RAGE BOT 1 LOGIC (Hook 사격 각도 조작 전용)
+local function rb1FindTarget()
+    local myChar = LocalPlayer.Character
+    if not myChar then return nil end
+    local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+    
+    local closest = nil
+    local closestDist = math.huge
+    local MAX_DISTANCE = 200
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if isEnemy(player) and player.Character then
+            local root = player.Character:FindFirstChild("HumanoidRootPart")
+            local head = player.Character:FindFirstChild("Head")
+            local hum = player.Character:FindFirstChildWhichIsA("Humanoid")
+            
+            if root and head and hum and hum.Health > 0 then
+                local dist = (myRoot.Position - root.Position).Magnitude
+                if dist <= MAX_DISTANCE and dist < closestDist then
+                    closestDist = dist
+                    closest = player
                 end
             end
         end
     end
-    return nearest
-end
-
-local function rbMainLoop()
-    if not rbEnabled then return end
-    rbTarget = rbFindNearestPlayer()
-    if rbTarget and rbTarget.Character and rbHrp then
-        local tHrp = rbTarget.Character:FindFirstChild("HumanoidRootPart")
-        local tH = rbTarget.Character:FindFirstChild("Humanoid")
-        if tHrp and tH and tH.Health > 0 then
-            local targetPos = tHrp.Position + Vector3.new(math.random(-8, 8), math.random(6, 12), math.random(-8, 8))
-            rbHrp.CFrame = CFrame.new(targetPos)
-            local time = tick() * 25
-            local rotX = math.rad(math.sin(time * 3.7) * 360)
-            local rotY = math.rad(math.cos(time * 4.3) * 360)
-            local rotZ = math.rad(math.sin(time * 5.1) * 360)
-            rbHrp.CFrame = rbHrp.CFrame * CFrame.Angles(rotX, rotY, rotZ)
-            rbHrp.Velocity = Vector3.new(math.random(-50, 50), math.random(-50, 50), math.random(-50, 50))
-        end
-    end
+    return closest
 end
 
 local function startRageBot()
-    rbUpdateCharacterRefs()
-    if rbConnection then rbConnection:Disconnect() end
-    rbConnection = RunService.Heartbeat:Connect(rbMainLoop)
+    rbEnabled = true
+    if rb1Conn1 then rb1Conn1:Disconnect() end
+    rb1Conn1 = RunService.Heartbeat:Connect(function()
+        if not rbEnabled then return end
+        rb1Target = rb1FindTarget()
+    end)
+
+    pcall(function()
+        local PlayerScripts = LocalPlayer:WaitForChild("PlayerScripts", 5)
+        local GunModule = require(PlayerScripts:WaitForChild("Modules"):WaitForChild("ItemTypes"):WaitForChild("Gun"))
+        local UtilityModule = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Utility"))
+
+        if GunModule and not rb1OldStartShooting then
+            rb1OldStartShooting = GunModule.StartShooting
+            
+            GunModule.StartShooting = function(item, ...)
+                local results = {rb1OldStartShooting(item, ...)}
+                
+                if not item.ClientFighter or not item.ClientFighter.IsLocalPlayer then
+                    return unpack(results)
+                end
+                
+                local data = results[3]
+                if not data or typeof(data) ~= "table" then
+                    return unpack(results)
+                end
+                
+                results[4] = true
+                local target = rb1Target
+                
+                if not rbEnabled or not target or not target.Character then
+                    return unpack(results)
+                end
+                
+                local head = target.Character:FindFirstChild("Head")
+                if not head then return unpack(results) end
+                
+                local headPos = head.Position
+                local headCFrame = head.CFrame
+                local belowPos = headPos - Vector3.new(0, 5, 0)
+                local lookCFrame = CFrame.lookAt(belowPos, headPos)
+                local randomOffset = headCFrame:ToObjectSpace(CFrame.new(headPos + Vector3.new(math.random(), math.random(), math.random())))
+                
+                data[utf8.char(0)] = UtilityModule:EncodeCFrame(CFrame.new(belowPos, headPos) * CFrame.Angles(lookCFrame:ToOrientation()))
+                data[utf8.char(1)] = UtilityModule:EncodeCFrame(CFrame.new(headPos) * CFrame.Angles(lookCFrame:ToOrientation()))
+                data[utf8.char(2)] = head
+                data[utf8.char(3)] = UtilityModule:EncodeCFrame(randomOffset)
+                
+                return unpack(results)
+            end
+        end
+    end)
 end
 
 local function stopRageBot()
-    if rbConnection then
-        rbConnection:Disconnect()
-        rbConnection = nil
-    end
-    rbTarget = nil
+    rbEnabled = false
+    if rb1Conn1 then rb1Conn1:Disconnect() rb1Conn1 = nil end
+    rb1Target = nil
 end
 
--- RAGE BOT 2
-local function getAbsoluteClosestEnemyRageBot2()
+-- RAGE BOT 2 LOGIC
+local function GetAbsoluteClosestEnemyRB2()
     local myChar = LocalPlayer.Character
     local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not myHrp then return nil end
 
     local closestPart = nil
     local shortestDist = math.huge
-
     local useInitialRule = false
     local referencePos = myHrp.Position
 
-    if not rb2LastTargetHrp or not rb2LastTargetHrp.Parent or not isAliveEnemy(Players:GetPlayerFromCharacter(rb2LastTargetHrp.Parent)) then
+    if not lastTargetHrp or not lastTargetHrp.Parent or not isAliveEnemy(Players:GetPlayerFromCharacter(lastTargetHrp.Parent)) then
         useInitialRule = true
         referencePos = myHrp.Position
     else
-        referencePos = rb2LastTargetHrp.Position
+        referencePos = lastTargetHrp.Position
     end
 
     for _, p in ipairs(Players:GetPlayers()) do
@@ -1194,7 +1419,7 @@ local function getAbsoluteClosestEnemyRageBot2()
         end
     end
 
-    rb2LastTargetHrp = closestPart
+    lastTargetHrp = closestPart
     return closestPart
 end
 
@@ -1202,14 +1427,14 @@ local function startRageBot2()
     if rb2Connection then rb2Connection:Disconnect() end
     rb2Connection = RunService.Heartbeat:Connect(function()
         if not rb2Enabled then return end
-        local myChar = LocalPlayer.Character
-        if not myChar then return end
-        local myHrp = myChar:FindFirstChild("HumanoidRootPart")
-        local myHum = myChar:FindFirstChildOfClass("Humanoid")
-        local myHead = myChar:FindFirstChild("Head")
+        local char = LocalPlayer.Character
+        if not char then return end
+        local myHrp = char:FindFirstChild("HumanoidRootPart")
+        local myHum = char:FindFirstChildOfClass("Humanoid")
+        local myHead = char:FindFirstChild("Head")
 
         if myHrp and myHum and myHum.Health > 0 then
-            local enemyHrp = getAbsoluteClosestEnemyRageBot2()
+            local enemyHrp = GetAbsoluteClosestEnemyRB2()
             if enemyHrp then
                 local enemyChar = enemyHrp.Parent
                 local enemyHead = enemyChar and enemyChar:FindFirstChild("Head")
@@ -1232,11 +1457,6 @@ local function startRageBot2()
                         myHrp.CFrame = behindCFrame
                     end
                 end
-                
-                local aimPart = enemyHead or enemyHrp
-                if aimPart then
-                    Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, aimPart.Position)
-                end
             end
         end
     end)
@@ -1247,10 +1467,74 @@ local function stopRageBot2()
         rb2Connection:Disconnect()
         rb2Connection = nil
     end
-    rb2LastTargetHrp = nil
+    lastTargetHrp = nil
 end
 
--- FULL AUTO
+-- RAGE BOT 3 LOGIC
+local function getClosestEnemyRB3()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    local closestEnemy, shortestDistance = nil, math.huge
+    for _, player in ipairs(Players:GetPlayers()) do
+        if isAliveEnemy(player) and player.Character then
+            local enemyHrp = player.Character:FindFirstChild("HumanoidRootPart")
+            if enemyHrp then
+                local dist = (hrp.Position - enemyHrp.Position).Magnitude
+                if dist < shortestDistance then
+                    shortestDistance = dist
+                    closestEnemy = player
+                end
+            end
+        end
+    end
+    return closestEnemy
+end
+
+local function startRageBot3()
+    if rb3Connection then rb3Connection:Disconnect() end
+    rb3Connection = RunService.Heartbeat:Connect(function()
+        if not rb3Enabled then return end
+        local char = LocalPlayer.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        
+        if hrp and hum and hum.Health > 0 then
+            local targetEnemy = getClosestEnemyRB3()
+            if targetEnemy and targetEnemy.Character then
+                local targetHrp = targetEnemy.Character:FindFirstChild("HumanoidRootPart")
+                local targetHead = targetEnemy.Character:FindFirstChild("Head") or targetHrp
+                if targetHrp and targetHead then
+                    local timeVal = tick() * 30
+                    local angleX = math.rad(math.sin(timeVal) * 180)
+                    local angleY = math.rad(math.cos(timeVal) * 360)
+                    local angleZ = math.rad(math.sin(timeVal * 1.5) * 180)
+
+                    local offsetVector = Vector3.new(
+                        math.cos(timeVal) * rb3Distance,
+                        (math.sin(timeVal) * 2),
+                        math.sin(timeVal) * rb3Distance
+                    )
+                    
+                    local baseCFrame = CFrame.new(targetHead.Position + offsetVector)
+                    hrp.CFrame = baseCFrame * CFrame.Angles(angleX, angleY, angleZ)
+                    hrp.Velocity = Vector3.new(0, 0, 0)
+                end
+            end
+        end
+    end)
+end
+
+local function stopRageBot3()
+    if rb3Connection then
+        rb3Connection:Disconnect()
+        rb3Connection = nil
+    end
+end
+
+-- FULL AUTO LOGIC
 local function faFindClosestPlayer()
     if not FULL_AUTO_ENABLED then return nil end
     local character = LocalPlayer.Character
@@ -1437,7 +1721,7 @@ local function stopFullAuto()
     faTargetPlayer = nil
 end
 
--- NO RECOIL
+-- NO RECOIL LOGIC
 local function initNoRecoilModules()
     pcall(function()
         local PlayerScripts = LocalPlayer:WaitForChild("PlayerScripts", 5)
@@ -1481,6 +1765,12 @@ local function enableNoRecoil()
         if nrItemLibrary and nrItemLibrary.Items then
             for weaponName, weaponData in pairs(nrItemLibrary.Items) do
                 if weaponData.Type == "Gun" then
+                    if not nrOriginalItemStats[weaponName] then
+                        nrOriginalItemStats[weaponName] = {
+                            ShootRecoil = weaponData.ShootRecoil,
+                            AimSpreadMultiplier = weaponData.AimSpreadMultiplier
+                        }
+                    end
                     weaponData.ShootRecoil = 0
                     weaponData.AimSpreadMultiplier = 0
                 end
@@ -1491,55 +1781,74 @@ local function enableNoRecoil()
 end
 
 local function disableNoRecoil()
-    if nrGunModule and nrOriginalRecoil then
+    if nrGunModule then
         pcall(function()
-            nrGunModule._Recoil = nrOriginalRecoil
-            nrGunModule.StartShooting = nrOriginalStartShooting
-            nrGunModule._LocalTracers = nrOriginal_LocalTracers
+            if nrOriginalRecoil then nrGunModule._Recoil = nrOriginalRecoil end
+            if nrOriginalStartShooting then nrGunModule.StartShooting = nrOriginalStartShooting end
+            if nrOriginal_LocalTracers then nrGunModule._LocalTracers = nrOriginal_LocalTracers end
+            
+            if nrItemLibrary and nrItemLibrary.Items then
+                for weaponName, origStats in pairs(nrOriginalItemStats) do
+                    if nrItemLibrary.Items[weaponName] then
+                        nrItemLibrary.Items[weaponName].ShootRecoil = origStats.ShootRecoil
+                        nrItemLibrary.Items[weaponName].AimSpreadMultiplier = origStats.AimSpreadMultiplier
+                    end
+                end
+            end
         end)
     end
     createNotification("No Recoil Disabled")
 end
 
--- FLY, NOCLIP, THIRD PERSON
+-- FLY, NOCLIP, THIRD PERSON LOGIC
 local function stopFlying()
     flyEnabled = false
-    if flyLoopConnection then flyLoopConnection:Disconnect() flyLoopConnection = nil end
-    if bodyVelocity then bodyVelocity:Destroy() bodyVelocity = nil end
-    if bodyGyro then bodyGyro:Destroy() bodyGyro = nil end
+    if bv then bv:Destroy() bv = nil end
+    if bg then bg:Destroy() bg = nil end
 end
 
 local function startFlying()
     stopFlying()
     flyEnabled = true
-    local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-    local hrp = character:WaitForChild("HumanoidRootPart", 5)
-    if not hrp then return end
 
-    bodyVelocity = Instance.new("BodyVelocity")
-    bodyVelocity.MaxForce = Vector3.new(1e9, 1e9, 1e9)
-    bodyVelocity.Velocity = Vector3.zero
-    bodyVelocity.Parent = hrp
+    task.spawn(function()
+        while flyEnabled do
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
 
-    bodyGyro = Instance.new("BodyGyro")
-    bodyGyro.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
-    bodyGyro.P = 9e4
-    bodyGyro.CFrame = hrp.CFrame
-    bodyGyro.Parent = hrp
+            if hrp and hum and hum.Health > 0 then
+                if not bv or bv.Parent ~= hrp then
+                    bv = Instance.new("BodyVelocity")
+                    bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+                    bv.Parent = hrp
+                end
 
-    flyLoopConnection = RunService.RenderStepped:Connect(function()
-        if flyEnabled and hrp and hrp.Parent then
-            local moveDir = Vector3.zero
-            if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + Camera.CFrame.LookVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - Camera.CFrame.LookVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - Camera.CFrame.RightVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + Camera.CFrame.RightVector end
-            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
-            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDir = moveDir - Vector3.new(0, 1, 0) end
+                if not bg or bg.Parent ~= hrp then
+                    bg = Instance.new("BodyGyro")
+                    bg.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+                    bg.Parent = hrp
+                end
 
-            bodyVelocity.Velocity = (moveDir.Magnitude > 0) and (moveDir.Unit * flySpeed) or Vector3.zero
-            bodyGyro.CFrame = Camera.CFrame
+                local camCF = Camera.CFrame
+                local moveDir = hum.MoveDirection
+
+                if moveDir.Magnitude > 0 then
+                    local relMove = camCF:VectorToObjectSpace(moveDir)
+                    bv.Velocity = (camCF.RightVector * relMove.X + camCF.LookVector * (-relMove.Z)).Unit * flySpeed
+                else
+                    bv.Velocity = Vector3.zero
+                end
+                bg.CFrame = camCF
+            else
+                if bv then bv:Destroy() bv = nil end
+                if bg then bg:Destroy() bg = nil end
+            end
+            task.wait()
         end
+
+        if bv then bv:Destroy() bv = nil end
+        if bg then bg:Destroy() bg = nil end
     end)
 end
 
@@ -1622,7 +1931,7 @@ local function disableThirdPerson()
     createNotification("3인칭 비활성화")
 end
 
--- VISUAL MESH WRAPPING
+-- VISUAL (MESH WRAPPING) LOGIC
 local function applyMeshWrapping()
     local VM = workspace:FindFirstChild("ViewModels")
     local FP = VM and VM:FindFirstChild("FirstPerson")
@@ -1661,7 +1970,7 @@ local function applyMeshWrapping()
     return true
 end
 
--- ANIMATION (SPIN)
+-- ANIMATION (SPIN) LOGIC
 local function resetJoints()
     for motor, originalC0 in pairs(originalC0s) do
         if motor and motor.Parent then motor.C0 = originalC0 end
@@ -1696,7 +2005,7 @@ RunService.RenderStepped:Connect(function(deltaTime)
     end
 end)
 
--- AUTO MATCH
+-- AUTO MATCH LOGIC
 local function attemptJoinMatch()
     if not AUTO_MATCH_ENABLED then return end
     pcall(function()
@@ -1714,10 +2023,10 @@ task.spawn(function()
 end)
 
 -- ============================================
--- UI BINDINGS & COLUMNS SETUP (순서 보장)
+-- UI BINDINGS & COLUMNS SETUP
 -- ============================================
 
--- 1. 메인탭 (가장 먼저 생성)
+-- 1. 메인탭
 local MainCol = Library:CreateColumn("메인탭")
 
 MainCol:AddSwitch({
@@ -1749,7 +2058,7 @@ MainCol:AddSwitch({
 })
 
 MainCol:AddSwitch({
-    Name = "Rage Bot (레이지봇 1)",
+    Name = "Rage Bot 1 (레이지봇 1)",
     Default = false,
     Callback = function(Value)
         rbEnabled = Value
@@ -1764,7 +2073,21 @@ MainCol:AddSwitch({
 })
 
 MainCol:AddSwitch({
-    Name = "Rage Bot 2 (메타 레이지봇)",
+    Name = "Desync (디싱크)",
+    Default = false,
+    Callback = function(Value)
+        if Value then
+            startStandaloneDesync()
+            createNotification("Desync Enabled")
+        else
+            stopStandaloneDesync()
+            createNotification("Desync Disabled")
+        end
+    end
+})
+
+MainCol:AddSwitch({
+    Name = "Rage Bot 2 (레이지봇 2)",
     Default = false,
     Callback = function(Value)
         rb2Enabled = Value
@@ -1779,13 +2102,55 @@ MainCol:AddSwitch({
 })
 
 MainCol:AddDropdown({
-    Name = "Rage Bot 2 위치 모드",
-    Options = {"OverHead", "UnderBottom", "Behind"},
-    Default = "OverHead",
+    Name = "Rage Bot 2 모드",
+    Options = {"UnderBottom", "OverHead", "Behind"},
+    Default = "UnderBottom",
     Callback = function(Options)
         rb2Mode = Options[1]
-        createNotification("Rage Bot 2 모드 변경: " .. Options[1])
+        createNotification("Rage Bot 2 모드: " .. Options[1])
     end
+})
+
+MainCol:AddSlider({
+    Name = "RB2 최소 거리 (Min Studs)",
+    Min = 0,
+    Max = 100,
+    Default = 100,
+    Suffix = " Studs",
+    Callback = function(Value) rb2MinStuds = Value end
+})
+
+MainCol:AddSlider({
+    Name = "RB2 최대 거리 (Max Studs)",
+    Min = 50,
+    Max = 1000,
+    Default = 100,
+    Suffix = " Studs",
+    Callback = function(Value) rb2MaxStuds = Value end
+})
+
+MainCol:AddSwitch({
+    Name = "Rage Bot 3 (레이지봇 3)",
+    Default = false,
+    Callback = function(Value)
+        rb3Enabled = Value
+        if Value then
+            startRageBot3()
+            createNotification("Rage Bot 3 Enabled")
+        else
+            stopRageBot3()
+            createNotification("Rage Bot 3 Disabled")
+        end
+    end
+})
+
+MainCol:AddSlider({
+    Name = "RB3 거리 (Distance)",
+    Min = 1,
+    Max = 20,
+    Default = 3,
+    Suffix = " Studs",
+    Callback = function(Value) rb3Distance = Value end
 })
 
 MainCol:AddSwitch({
@@ -2012,6 +2377,7 @@ EnvCol:AddDropdown({
     Default = "None",
     Callback = function(Options)
         envConfig.weatherType = Options[1]
+        if WeatherFolder then WeatherFolder:ClearAllChildren() end
         updateLightingSettings()
     end
 })
@@ -2058,7 +2424,9 @@ LocalPlayer.CharacterAdded:Connect(function(character)
     task.wait(0.5)
 
     if rbEnabled then startRageBot() end
+    if DESYNC_ENABLED then startStandaloneDesync() end
     if rb2Enabled then startRageBot2() end
+    if rb3Enabled then startRageBot3() end
     if FULL_AUTO_ENABLED then startFullAuto() end
     if flyEnabled then startFlying() end
     if noclipEnabled then toggleNoclip(true) end

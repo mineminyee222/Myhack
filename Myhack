@@ -58,7 +58,7 @@ local FULL_AUTO_ENABLED = false
 local AUTO_MATCH_ENABLED = false
 local AUTO_MATCH_MODE = "1v1"
 local HUD_DISPLAY_ENABLED = true
-local DESYNC_ENABLED = false -- 독립 Desync 토글 변수 추가
+local DESYNC_ENABLED = false -- 독립 Desync 토글 변수
 
 -- Aim Target Settings
 local AIM_TARGET_MODE = "head"
@@ -114,7 +114,6 @@ local originalData = {}
 
 -- Player Movement & Third Person Variables
 local flyEnabled, flySpeed = false, 50
-local flyLoopThread = nil
 local bv, bg
 local noclipEnabled, infJumpEnabled = false, false
 local noclipConnection, thirdPersonWheelConnection
@@ -132,7 +131,7 @@ local originalC0s = {}
 -- Helper: UI MainFrame 참조
 local MainFrame = { Visible = false }
 
--- 통합 환경 제어 상태 변수 (Shader & Skybox & Water & Weather)
+-- 통합 환경 제어 상태 변수
 local envConfig = {
     shaderEnabled = false,
     skyboxEnabled = false,
@@ -147,7 +146,7 @@ local originalWaterProps = {}
 local WaterTerrain = workspace:FindFirstChildOfClass("Terrain")
 local nightConnection = nil
 
--- 동적 색상 제어 (Pulse Color Elements)
+-- 동적 색상 제어
 local dynamicPrimaryElements = {}
 local dynamicAccentElements = {}
 
@@ -277,7 +276,6 @@ CanvasGroup.BackgroundTransparency = 1
 CanvasGroup.GroupTransparency = 0
 CanvasGroup.Parent = ScreenGui
 
--- 테마 색상 애니메이션 루프
 task.spawn(function()
     local basePrimary = Color3.fromRGB(115, 130, 220)
     local baseAccent = Color3.fromRGB(160, 100, 255)
@@ -305,7 +303,6 @@ task.spawn(function()
     end
 end)
 
--- Keybinds/ArrayList HUD
 local hudFrame = Instance.new("Frame")
 hudFrame.Name = "ArrayListHUD"
 hudFrame.Size = UDim2.new(0, 240, 0, 0)
@@ -794,7 +791,7 @@ function Library:CreateColumn(colName)
 end
 
 -- ============================================
--- 환경 제어, 유리 쉐이더, 스카이박스, HD 워터 & 낮/밤 제어
+-- 환경 제어 & 날씨
 -- ============================================
 local function isPlayerPart(part)
     for _, player in pairs(Players:GetPlayers()) do
@@ -982,7 +979,6 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
--- 날씨 파티클 루프
 RunService.Heartbeat:Connect(function()
     if envConfig.weatherType == "None" then
         if WeatherFolder and #WeatherFolder:GetChildren() > 0 then
@@ -993,7 +989,6 @@ RunService.Heartbeat:Connect(function()
 
     local isRain = (envConfig.weatherType == "Rain")
     local isStorm = envConfig.stormEnabled
-
     local spawnRate = isRain and (isStorm and 15 or 4) or (isStorm and 8 or 2)
 
     for _ = 1, spawnRate do
@@ -1220,8 +1215,16 @@ end
 setupSilentAimHook()
 
 -- ============================================
--- STANDALONE DESYNC SYSTEM (독립 실행 기능)
+-- STANDALONE DESYNC SYSTEM (독립 실행 - 재스폰 고침)
 -- ============================================
+local function stopStandaloneDesync()
+    if desyncConnection then
+        desyncConnection:Disconnect()
+        desyncConnection = nil
+    end
+    pcall(function() RunService:UnbindFromRenderStep("Restore_Standalone_Desync") end)
+end
+
 local function getDesyncTarget()
     local myChar = LocalPlayer.Character
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
@@ -1246,12 +1249,15 @@ local function getDesyncTarget()
 end
 
 local function startStandaloneDesync()
-    if desyncConnection then desyncConnection:Disconnect() end
+    stopStandaloneDesync()
+    
     desyncConnection = RunService.Heartbeat:Connect(function()
         if not DESYNC_ENABLED then return end
         local myChar = LocalPlayer.Character
         local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-        if not myRoot then return end
+        local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+        
+        if not myRoot or not myHum or myHum.Health <= 0 then return end
         
         local target = getDesyncTarget()
         local targetRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
@@ -1261,7 +1267,6 @@ local function startStandaloneDesync()
         local originalVelocity = myRoot.Velocity
         local originalRotVelocity = myRoot.RotVelocity
         
-        -- 타겟 아래로 서버 위치 이탈(Desync)
         myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -5, 0)
         
         RunService:BindToRenderStep("Restore_Standalone_Desync", 101, function()
@@ -1270,16 +1275,9 @@ local function startStandaloneDesync()
                 myRoot.Velocity = originalVelocity
                 myRoot.RotVelocity = originalRotVelocity
             end
-            RunService:UnbindFromRenderStep("Restore_Standalone_Desync")
+            pcall(function() RunService:UnbindFromRenderStep("Restore_Standalone_Desync") end)
         end)
     end)
-end
-
-local function stopStandaloneDesync()
-    if desyncConnection then
-        desyncConnection:Disconnect()
-        desyncConnection = nil
-    end
 end
 
 -- RAGE BOT 1 LOGIC
@@ -1319,6 +1317,7 @@ local function rb1StopDesync()
         rb1Conn2:Disconnect()
         rb1Conn2 = nil
     end
+    pcall(function() RunService:UnbindFromRenderStep("Restore_RB1") end)
 end
 
 local function rb1StartDesync(target)
@@ -1330,7 +1329,8 @@ local function rb1StartDesync(target)
         if not rb1Desync or not rbEnabled then return end
         local myChar = LocalPlayer.Character
         local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-        if not myRoot then return end
+        local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+        if not myRoot or not myHum or myHum.Health <= 0 then return end
         
         local targetRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
         if not targetRoot then
@@ -1350,7 +1350,7 @@ local function rb1StartDesync(target)
                 myRoot.Velocity = originalVelocity
                 myRoot.RotVelocity = originalRotVelocity
             end
-            RunService:UnbindFromRenderStep("Restore_RB1")
+            pcall(function() RunService:UnbindFromRenderStep("Restore_RB1") end)
         end)
     end)
 end
@@ -2126,7 +2126,6 @@ MainCol:AddSwitch({
     end
 })
 
--- 독립 Desync 스위치 추가
 MainCol:AddSwitch({
     Name = "Desync (데스앙크 단독)",
     Default = false,
@@ -2484,16 +2483,18 @@ ConfigCol:AddButton("설정 불러오기", function()
 end)
 
 -- ============================================
--- RESPAWN RE-TRIGGER SYSTEM
+-- RESPAWN RE-TRIGGER SYSTEM (개선됨)
 -- ============================================
-LocalPlayer.CharacterAdded:Connect(function(character)
+local function onCharacterAdded(character)
     table.clear(originalC0s)
     
-    character:WaitForChild("HumanoidRootPart", 10)
-    character:WaitForChild("Humanoid", 10)
+    local root = character:WaitForChild("HumanoidRootPart", 10)
+    local hum = character:WaitForChild("Humanoid", 10)
 
-    task.wait(0.5)
+    if not root or not hum then return end
+    task.wait(0.3)
 
+    -- 데스앙크 및 기능 완전 재초기화
     if DESYNC_ENABLED then startStandaloneDesync() end
     if rbEnabled then startRageBot() end
     if rb2Enabled then startRageBot2() end
@@ -2507,7 +2508,16 @@ LocalPlayer.CharacterAdded:Connect(function(character)
     if envConfig.skyboxEnabled then toggleSkybox() end
     if envConfig.waterEnabled then toggleWater() end
     updateKeybindsList()
-end)
+end
+
+LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
+
+-- 현재 캐릭터 존재 시 즉시 1회 초기화
+if LocalPlayer.Character then
+    task.spawn(function()
+        onCharacterAdded(LocalPlayer.Character)
+    end)
+end
 
 -- 초기화
 updateLightingSettings()

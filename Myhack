@@ -58,6 +58,7 @@ local FULL_AUTO_ENABLED = false
 local AUTO_MATCH_ENABLED = false
 local AUTO_MATCH_MODE = "1v1"
 local HUD_DISPLAY_ENABLED = true
+local DESYNC_ENABLED = false -- 독립 Desync 토글 변수 추가
 
 -- Aim Target Settings
 local AIM_TARGET_MODE = "head"
@@ -66,6 +67,9 @@ local randomTimerThread = nil
 
 local metaTableHooked = false
 local oldNamecall = nil
+
+-- Standalone Desync Variables
+local desyncConnection = nil
 
 -- Advanced Rage Bot 1 Variables
 local rb1Target = nil
@@ -175,6 +179,7 @@ function ConfigSystem:Save(fileName)
             SilentAim = SILENT_AIM_ENABLED,
             AimTarget = AIM_TARGET_MODE,
             NoRecoil = NO_RECOIL_ENABLED,
+            Desync = DESYNC_ENABLED,
             RageBot = rbEnabled,
             RageBot2 = rb2Enabled,
             RageBot3 = rb3Enabled,
@@ -216,6 +221,7 @@ function ConfigSystem:Load(fileName)
         if f.SilentAim ~= nil and self.UIElements["Silent Aim (사이런트 에임)"] then self.UIElements["Silent Aim (사이런트 에임)"](f.SilentAim) end
         if f.AimTarget ~= nil and self.UIElements["Aim Target (에임 타겟)"] then self.UIElements["Aim Target (에임 타겟)"](f.AimTarget) end
         if f.NoRecoil ~= nil and self.UIElements["No Recoil (총 반동 없애기)"] then self.UIElements["No Recoil (총 반동 없애기)"](f.NoRecoil) end
+        if f.Desync ~= nil and self.UIElements["Desync (데스앙크 단독)"] then self.UIElements["Desync (데스앙크 단독)"](f.Desync) end
         if f.RageBot ~= nil and self.UIElements["Rage Bot 1 (레이지봇 1)"] then self.UIElements["Rage Bot 1 (레이지봇 1)"](f.RageBot) end
         if f.RageBot2 ~= nil and self.UIElements["Rage Bot 2 (레이지봇 2)"] then self.UIElements["Rage Bot 2 (레이지봇 2)"](f.RageBot2) end
         if f.RageBot3 ~= nil and self.UIElements["Rage Bot 3 (레이지봇 3)"] then self.UIElements["Rage Bot 3 (레이지봇 3)"](f.RageBot3) end
@@ -327,6 +333,7 @@ local function updateKeybindsList()
     
     if SILENT_AIM_ENABLED then table.insert(activeFeatures, "Silent Aim") end
     if NO_RECOIL_ENABLED then table.insert(activeFeatures, "No Recoil") end
+    if DESYNC_ENABLED then table.insert(activeFeatures, "Desync Standalone") end
     if rbEnabled then table.insert(activeFeatures, "Rage Bot 1") end
     if rb2Enabled then table.insert(activeFeatures, "Rage Bot 2") end
     if rb3Enabled then table.insert(activeFeatures, "Rage Bot 3") end
@@ -1212,7 +1219,70 @@ local function setupSilentAimHook()
 end
 setupSilentAimHook()
 
--- RAGE BOT 1 LOGIC (요청하신 고급 Desync & Hook 기반 레이지봇)
+-- ============================================
+-- STANDALONE DESYNC SYSTEM (독립 실행 기능)
+-- ============================================
+local function getDesyncTarget()
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+    
+    local closest = nil
+    local closestDist = math.huge
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if isAliveEnemy(player) and player.Character then
+            local root = player.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                local dist = (myRoot.Position - root.Position).Magnitude
+                if dist < closestDist then
+                    closestDist = dist
+                    closest = player
+                end
+            end
+        end
+    end
+    return closest
+end
+
+local function startStandaloneDesync()
+    if desyncConnection then desyncConnection:Disconnect() end
+    desyncConnection = RunService.Heartbeat:Connect(function()
+        if not DESYNC_ENABLED then return end
+        local myChar = LocalPlayer.Character
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if not myRoot then return end
+        
+        local target = getDesyncTarget()
+        local targetRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        if not targetRoot then return end
+        
+        local originalCFrame = myRoot.CFrame
+        local originalVelocity = myRoot.Velocity
+        local originalRotVelocity = myRoot.RotVelocity
+        
+        -- 타겟 아래로 서버 위치 이탈(Desync)
+        myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -5, 0)
+        
+        RunService:BindToRenderStep("Restore_Standalone_Desync", 101, function()
+            if myRoot and myRoot.Parent then
+                myRoot.CFrame = originalCFrame
+                myRoot.Velocity = originalVelocity
+                myRoot.RotVelocity = originalRotVelocity
+            end
+            RunService:UnbindFromRenderStep("Restore_Standalone_Desync")
+        end)
+    end)
+end
+
+local function stopStandaloneDesync()
+    if desyncConnection then
+        desyncConnection:Disconnect()
+        desyncConnection = nil
+    end
+end
+
+-- RAGE BOT 1 LOGIC
 local function rb1FindTarget()
     local myChar = LocalPlayer.Character
     if not myChar then return nil end
@@ -2056,6 +2126,22 @@ MainCol:AddSwitch({
     end
 })
 
+-- 독립 Desync 스위치 추가
+MainCol:AddSwitch({
+    Name = "Desync (데스앙크 단독)",
+    Default = false,
+    Callback = function(Value)
+        DESYNC_ENABLED = Value
+        if Value then
+            startStandaloneDesync()
+            createNotification("Desync Standalone Enabled")
+        else
+            stopStandaloneDesync()
+            createNotification("Desync Standalone Disabled")
+        end
+    end
+})
+
 MainCol:AddSwitch({
     Name = "Rage Bot 1 (레이지봇 1)",
     Default = false,
@@ -2408,6 +2494,7 @@ LocalPlayer.CharacterAdded:Connect(function(character)
 
     task.wait(0.5)
 
+    if DESYNC_ENABLED then startStandaloneDesync() end
     if rbEnabled then startRageBot() end
     if rb2Enabled then startRageBot2() end
     if rb3Enabled then startRageBot3() end

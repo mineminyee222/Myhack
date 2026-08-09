@@ -52,7 +52,6 @@ local SILENT_AIM_ENABLED = false
 local THIRD_PERSON_ENABLED = false
 local NO_RECOIL_ENABLED = false
 local rbEnabled = false
-local DESYNC_ENABLED = false -- 독립된 Desync 상태 변수
 local rb2Enabled = false
 local rb3Enabled = false
 local FULL_AUTO_ENABLED = false
@@ -68,13 +67,14 @@ local randomTimerThread = nil
 local metaTableHooked = false
 local oldNamecall = nil
 
--- Rage Bot 1 Variables
+-- Advanced Rage Bot 1 Variables
 local rb1Target = nil
+local rb1Desync = false
 local rb1Conn1 = nil
+local rb1Conn2 = nil
+local rb1Task1 = nil
 local rb1OldStartShooting = nil
-
--- Standalone Desync Variables
-local desyncConn = nil
+local rb1CurrentTarget = nil
 
 -- Rage Bot 2 Variables
 local rb2Connection = nil
@@ -176,7 +176,6 @@ function ConfigSystem:Save(fileName)
             AimTarget = AIM_TARGET_MODE,
             NoRecoil = NO_RECOIL_ENABLED,
             RageBot = rbEnabled,
-            Desync = DESYNC_ENABLED,
             RageBot2 = rb2Enabled,
             RageBot3 = rb3Enabled,
             FullAuto = FULL_AUTO_ENABLED,
@@ -218,7 +217,6 @@ function ConfigSystem:Load(fileName)
         if f.AimTarget ~= nil and self.UIElements["Aim Target (에임 타겟)"] then self.UIElements["Aim Target (에임 타겟)"](f.AimTarget) end
         if f.NoRecoil ~= nil and self.UIElements["No Recoil (총 반동 없애기)"] then self.UIElements["No Recoil (총 반동 없애기)"](f.NoRecoil) end
         if f.RageBot ~= nil and self.UIElements["Rage Bot 1 (레이지봇 1)"] then self.UIElements["Rage Bot 1 (레이지봇 1)"](f.RageBot) end
-        if f.Desync ~= nil and self.UIElements["Desync (디싱크)"] then self.UIElements["Desync (디싱크)"](f.Desync) end
         if f.RageBot2 ~= nil and self.UIElements["Rage Bot 2 (레이지봇 2)"] then self.UIElements["Rage Bot 2 (레이지봇 2)"](f.RageBot2) end
         if f.RageBot3 ~= nil and self.UIElements["Rage Bot 3 (레이지봇 3)"] then self.UIElements["Rage Bot 3 (레이지봇 3)"](f.RageBot3) end
         if f.FullAuto ~= nil and self.UIElements["Full Auto (풀 오토)"] then self.UIElements["Full Auto (풀 오토)"](f.FullAuto) end
@@ -330,7 +328,6 @@ local function updateKeybindsList()
     if SILENT_AIM_ENABLED then table.insert(activeFeatures, "Silent Aim") end
     if NO_RECOIL_ENABLED then table.insert(activeFeatures, "No Recoil") end
     if rbEnabled then table.insert(activeFeatures, "Rage Bot 1") end
-    if DESYNC_ENABLED then table.insert(activeFeatures, "Desync") end
     if rb2Enabled then table.insert(activeFeatures, "Rage Bot 2") end
     if rb3Enabled then table.insert(activeFeatures, "Rage Bot 3") end
     if FULL_AUTO_ENABLED then table.insert(activeFeatures, "Full Auto") end
@@ -1047,7 +1044,7 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ============================================
--- MAIN LOGICS (AIM, DESYNC, RAGEBOTS, FULLAUTO 등)
+-- MAIN LOGICS (AIM, RAGEBOTS, FULLAUTO 등)
 -- ============================================
 
 local function getTeamID(player)
@@ -1215,65 +1212,7 @@ local function setupSilentAimHook()
 end
 setupSilentAimHook()
 
--- STANDALONE DESYNC LOGIC
-local function startStandaloneDesync()
-    if desyncConn then desyncConn:Disconnect() end
-    DESYNC_ENABLED = true
-    
-    desyncConn = RunService.Heartbeat:Connect(function()
-        if not DESYNC_ENABLED then return end
-        local myChar = LocalPlayer.Character
-        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
-        if not myRoot then return end
-        
-        -- 가장 가까운 적을 탐색하여 타겟 설정
-        local target = rb1Target
-        if not target then
-            local myPos = myRoot.Position
-            local closestDist = math.huge
-            for _, player in pairs(Players:GetPlayers()) do
-                if isEnemy(player) and player.Character then
-                    local root = player.Character:FindFirstChild("HumanoidRootPart")
-                    if root then
-                        local dist = (myPos - root.Position).Magnitude
-                        if dist < closestDist then
-                            closestDist = dist
-                            target = player
-                        end
-                    end
-                end
-            end
-        end
-        
-        local targetRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-        if not targetRoot then return end
-        
-        local originalCFrame = myRoot.CFrame
-        local originalVelocity = myRoot.Velocity
-        local originalRotVelocity = myRoot.RotVelocity
-        
-        myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -5, 0)
-        
-        RunService:BindToRenderStep("Restore_Desync", 101, function()
-            if myRoot and myRoot.Parent then
-                myRoot.CFrame = originalCFrame
-                myRoot.Velocity = originalVelocity
-                myRoot.RotVelocity = originalRotVelocity
-            end
-            RunService:UnbindFromRenderStep("Restore_Desync")
-        end)
-    end)
-end
-
-local function stopStandaloneDesync()
-    DESYNC_ENABLED = false
-    if desyncConn then
-        desyncConn:Disconnect()
-        desyncConn = nil
-    end
-end
-
--- RAGE BOT 1 LOGIC (Hook 사격 각도 조작 전용)
+-- RAGE BOT 1 LOGIC (요청하신 고급 Desync & Hook 기반 레이지봇)
 local function rb1FindTarget()
     local myChar = LocalPlayer.Character
     if not myChar then return nil end
@@ -1301,6 +1240,49 @@ local function rb1FindTarget()
         end
     end
     return closest
+end
+
+local function rb1StopDesync()
+    rb1Desync = false
+    rb1CurrentTarget = nil
+    if rb1Conn2 then
+        rb1Conn2:Disconnect()
+        rb1Conn2 = nil
+    end
+end
+
+local function rb1StartDesync(target)
+    if rb1Conn2 then rb1Conn2:Disconnect() end
+    rb1Desync = true
+    rb1CurrentTarget = target
+    
+    rb1Conn2 = RunService.Heartbeat:Connect(function()
+        if not rb1Desync or not rbEnabled then return end
+        local myChar = LocalPlayer.Character
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if not myRoot then return end
+        
+        local targetRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        if not targetRoot then
+            rb1StopDesync()
+            return
+        end
+        
+        local originalCFrame = myRoot.CFrame
+        local originalVelocity = myRoot.Velocity
+        local originalRotVelocity = myRoot.RotVelocity
+        
+        myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -5, 0)
+        
+        RunService:BindToRenderStep("Restore_RB1", 101, function()
+            if myRoot and myRoot.Parent then
+                myRoot.CFrame = originalCFrame
+                myRoot.Velocity = originalVelocity
+                myRoot.RotVelocity = originalRotVelocity
+            end
+            RunService:UnbindFromRenderStep("Restore_RB1")
+        end)
+    end)
 end
 
 local function startRageBot()
@@ -1338,6 +1320,16 @@ local function startRageBot()
                     return unpack(results)
                 end
                 
+                if not rb1Desync or rb1CurrentTarget ~= target then
+                    rb1StartDesync(target)
+                    task.wait(0.1)
+                end
+                
+                if rb1Task1 then
+                    task.cancel(rb1Task1)
+                    rb1Task1 = nil
+                end
+                
                 local head = target.Character:FindFirstChild("Head")
                 if not head then return unpack(results) end
                 
@@ -1352,6 +1344,10 @@ local function startRageBot()
                 data[utf8.char(2)] = head
                 data[utf8.char(3)] = UtilityModule:EncodeCFrame(randomOffset)
                 
+                rb1Task1 = task.delay(0.15, function()
+                    rb1StopDesync()
+                end)
+                
                 return unpack(results)
             end
         end
@@ -1361,6 +1357,9 @@ end
 local function stopRageBot()
     rbEnabled = false
     if rb1Conn1 then rb1Conn1:Disconnect() rb1Conn1 = nil end
+    if rb1Conn2 then rb1Conn2:Disconnect() rb1Conn2 = nil end
+    if rb1Task1 then task.cancel(rb1Task1) rb1Task1 = nil end
+    rb1StopDesync()
     rb1Target = nil
 end
 
@@ -2064,24 +2063,10 @@ MainCol:AddSwitch({
         rbEnabled = Value
         if Value then
             startRageBot()
-            createNotification("Rage Bot 1 Enabled")
+            createNotification("Rage Bot 1 (Desync Hook) Enabled")
         else
             stopRageBot()
             createNotification("Rage Bot 1 Disabled")
-        end
-    end
-})
-
-MainCol:AddSwitch({
-    Name = "Desync (디싱크)",
-    Default = false,
-    Callback = function(Value)
-        if Value then
-            startStandaloneDesync()
-            createNotification("Desync Enabled")
-        else
-            stopStandaloneDesync()
-            createNotification("Desync Disabled")
         end
     end
 })
@@ -2424,7 +2409,6 @@ LocalPlayer.CharacterAdded:Connect(function(character)
     task.wait(0.5)
 
     if rbEnabled then startRageBot() end
-    if DESYNC_ENABLED then startStandaloneDesync() end
     if rb2Enabled then startRageBot2() end
     if rb3Enabled then startRageBot3() end
     if FULL_AUTO_ENABLED then startFullAuto() end

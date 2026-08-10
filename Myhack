@@ -59,6 +59,8 @@ local AUTO_MATCH_ENABLED = false
 local AUTO_MATCH_MODE = "1v1"
 local HUD_DISPLAY_ENABLED = true
 local DESYNC_ENABLED = false -- 독립 Desync 토글 변수
+local HIT_INDICATOR_ENABLED = false -- 신규: Hit 표시 토글 변수
+local LEVEL_SPOOF_VALUE = 100 -- 신규: 레벨 스푸퍼 변수
 
 -- Aim Target Settings
 local AIM_TARGET_MODE = "head"
@@ -151,6 +153,47 @@ local dynamicPrimaryElements = {}
 local dynamicAccentElements = {}
 
 -- ============================================
+-- ADDITIONAL FEATURES STATE & HELPERS (Second Code)
+-- ============================================
+local localplayer = LocalPlayer
+local runservice = RunService
+local settings = {
+    enabled = false,
+    yawtype = "none",
+    pitchtype = "none",
+    angletype = "none",
+    customangle = 0,
+    minspeed = 10,
+    maxspeed = 20,
+    minangle = 30,
+    maxangle = 60,
+    randomangle = false
+}
+local statemanager = {
+    framecounter = 0,
+    smoothyaw = 0,
+    smoothpitch = 0,
+    smoothroll = 0
+}
+local local_fighter = nil
+
+local function instanceSafeRequire(module)
+    local success, result = pcall(function() return require(module) end)
+    if success then return result end
+    return nil
+end
+
+local function curweap2()
+    local char = localplayer.Character
+    if not char then return nil end
+    return char:FindFirstChildOfClass("Tool")
+end
+
+local function resetHeadBackwardsMotors()
+    -- Mock/Placeholder for safety if not defined externally
+end
+
+-- ============================================
 -- MODULAR CONFIG SYSTEM
 -- ============================================
 local ConfigSystem = {
@@ -196,7 +239,10 @@ function ConfigSystem:Save(fileName)
             EnvWeather = envConfig.weatherType,
             EnvStorm = envConfig.stormEnabled,
             EnvTime = envConfig.timeOfDay,
-            HudDisplay = HUD_DISPLAY_ENABLED
+            HudDisplay = HUD_DISPLAY_ENABLED,
+            HitIndicator = HIT_INDICATOR_ENABLED,
+            DeviceSpoof = _G.Features and _G.Features.DeviceSpoof and _G.Features.DeviceSpoof.Enabled,
+            LevelSpoof = LEVEL_SPOOF_VALUE
         }
     }
     
@@ -238,6 +284,8 @@ function ConfigSystem:Load(fileName)
         if f.EnvStorm ~= nil and self.UIElements["폭풍 설정 (Storm)"] then self.UIElements["폭풍 설정 (Storm)"](f.EnvStorm) end
         if f.EnvTime ~= nil and self.UIElements["시간대 (Time of Day)"] then self.UIElements["시간대 (Time of Day)"](f.EnvTime) end
         if f.HudDisplay ~= nil and self.UIElements["키바인드 표시 (HUD)"] then self.UIElements["키바인드 표시 (HUD)"](f.HudDisplay) end
+        if f.HitIndicator ~= nil and self.UIElements["Hit 표시 (Hit Marker)"] then self.UIElements["Hit 표시 (Hit Marker)"](f.HitIndicator) end
+        if f.LevelSpoof ~= nil and self.UIElements["레벨 스푸퍼 설정"] then self.UIElements["레벨 스푸퍼 설정"](f.LevelSpoof) end
         self.CurrentFile = fileName
         return true
     end
@@ -355,6 +403,9 @@ local function updateKeybindsList()
         table.insert(activeFeatures, name) 
     end
     if envConfig.timeOfDay == "Night" then table.insert(activeFeatures, "Night Mode [Pad4]") end
+    if HIT_INDICATOR_ENABLED then table.insert(activeFeatures, "Hit Indicator") end
+    if getgenv().InstanceUndergroundEnabled then table.insert(activeFeatures, "Anti-Void") end
+    if _G.Features and _G.Features.DeviceSpoof and _G.Features.DeviceSpoof.Enabled then table.insert(activeFeatures, "Device Spoof (" .. _G.Features.DeviceSpoof.CurrentDevice .. ")") end
 
     for _, featureName in ipairs(activeFeatures) do
         local itemFrame = Instance.new("Frame")
@@ -1183,6 +1234,36 @@ local function shouldHookRaycast(origin, direction, raycastParams)
     return true
 end
 
+-- HIT INDICATOR SYSTEM (신규)
+local function triggerHitMarker()
+    if not HIT_INDICATOR_ENABLED then return end
+    local hitFrame = Instance.new("Frame")
+    hitFrame.Size = UDim2.new(0, 16, 0, 16)
+    hitFrame.Position = UDim2.new(0.5, -8, 0.5, -8)
+    hitFrame.BackgroundTransparency = 1
+    hitFrame.Parent = ScreenGui
+
+    local line1 = Instance.new("Frame")
+    line1.Size = UDim2.new(1, 0, 0, 2)
+    line1.Position = UDim2.new(0, 0, 0.5, -1)
+    line1.Rotation = 45
+    line1.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    line1.BorderSizePixel = 0
+    line1.Parent = hitFrame
+
+    local line2 = Instance.new("Frame")
+    line2.Size = UDim2.new(1, 0, 0, 2)
+    line2.Position = UDim2.new(0, 0, 0.5, -1)
+    line2.Rotation = -45
+    line2.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    line2.BorderSizePixel = 0
+    line2.Parent = hitFrame
+
+    TweenService:Create(line1, TweenInfo.new(0.3), {BackgroundTransparency = 1}):Play()
+    TweenService:Create(line2, TweenInfo.new(0.3), {BackgroundTransparency = 1}):Play()
+    Debris:AddItem(hitFrame, 0.35)
+end
+
 local function setupSilentAimHook()
     if metaTableHooked then return end
     local hookSuccess, mt = pcall(function() return getrawmetatable(game) end)
@@ -1200,7 +1281,10 @@ local function setupSilentAimHook()
                 local closestPlayer = getClosestPlayerForSilentAim()
                 if closestPlayer and closestPlayer.Character then
                     local targetPart = getAimTargetPart(closestPlayer.Character)
-                    if targetPart then return createFakeRaycastResult(targetPart, args[1]) end
+                    if targetPart then 
+                        triggerHitMarker()
+                        return createFakeRaycastResult(targetPart, args[1]) 
+                    end
                 end
                 return nil
             end
@@ -2092,6 +2176,370 @@ task.spawn(function()
 end)
 
 -- ============================================
+-- INTEGRATED SYSTEMS (Anti-Aim Underground & Device Spoofer)
+-- ============================================
+
+-- Underground / Anti-Void related (AntiAimUnderground)
+local underground_enabled = false
+local camera_controller = instanceSafeRequire(game:GetService("Players").LocalPlayer.PlayerScripts:WaitForChild("Controllers", 5) and game:GetService("Players").LocalPlayer.PlayerScripts.Controllers:FindFirstChild("CameraController"))
+
+local underground_oldpos
+local function getFloorBelowPosition(pos)
+    local rayOrigin = pos
+    local rayDirection = Vector3.new(0, -500, 0)
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    if local_fighter and local_fighter.Entity and local_fighter.Entity.RootPart then
+        raycastParams.FilterDescendantsInstances = {local_fighter.Entity.RootPart.Parent}
+    end
+    local result = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+    if result then
+        return CFrame.new(Vector3.new(pos.X, result.Position.Y - 2, pos.Z))
+    end
+    return nil
+end
+
+if camera_controller and camera_controller.Update then
+    local old_underground_camera_controller = camera_controller.Update
+    camera_controller.Update = function(...)
+        local arguments = {...}
+        if underground_enabled and local_fighter and local_fighter.Entity and local_fighter.Entity.RootPart and underground_oldpos then
+            local_fighter.Entity.RootPart.CFrame = underground_oldpos
+        end
+        return old_underground_camera_controller(table.unpack(arguments))
+    end
+end
+
+game:GetService("RunService").Heartbeat:Connect(function()
+    if getgenv().InstanceConfigLoading then
+        return
+    end
+    if not underground_enabled then
+        underground_oldpos = nil
+        return
+    end
+    local curweap = curweap2()
+    if not curweap then
+        underground_oldpos = nil
+        return
+    end
+    if local_fighter and local_fighter.Entity and local_fighter.Entity.RootPart then
+        underground_oldpos = local_fighter.Entity.RootPart.CFrame
+        local currentPos = local_fighter.Entity.RootPart.Position
+        local floorCFrame = getFloorBelowPosition(currentPos)
+        if floorCFrame then
+            local_fighter.Entity.RootPart.CFrame = floorCFrame
+        end
+    end
+end)
+
+local antiaim = {
+    calculateyaw = function(deltatime)
+        local yaw = 0
+        local currenttime = tick()
+        if settings.yawtype == "jitter" then
+            local minangle = math.rad(settings.minangle)
+            local maxangle = math.rad(settings.maxangle)
+            if settings.randomangle then
+                yaw = (math.random() * (maxangle - (-maxangle))) + (-maxangle)
+            else
+                yaw = math.random() > 0.5 and minangle or -minangle
+            end
+        elseif settings.yawtype == "spinbot" then
+            local speed = (math.random() * (settings.maxspeed / 10 - settings.minspeed / 10)) + (settings.minspeed / 10)
+            yaw = (currenttime * speed) % (2 * math.pi)
+        elseif settings.yawtype == "random" then
+            if statemanager.framecounter % 30 == 0 then
+                yaw = (math.random() * (math.rad(settings.maxangle) - (-math.rad(settings.maxangle)))) + (-math.rad(settings.maxangle))
+            else
+                yaw = statemanager.smoothyaw
+            end
+        end
+        return yaw
+    end,
+    calculatepitch = function()
+        local pitch = 0
+        if settings.pitchtype == "jitter" then
+            local minangle = math.rad(settings.minangle)
+            local maxangle = math.rad(settings.maxangle)
+            if settings.randomangle then
+                pitch = (math.random() * (maxangle - (-maxangle))) + (-maxangle)
+            else
+                pitch = math.random() > 0.5 and minangle or -minangle
+            end
+        elseif settings.pitchtype == "spinbot" then
+            pitch = math.sin(tick() * (settings.maxspeed / 10)) * math.rad(settings.maxangle)
+        elseif settings.pitchtype == "random" then
+            if statemanager.framecounter % 20 == 0 then
+                pitch = (math.random() * (math.rad(89) - math.rad(-89))) + math.rad(-89)
+            else
+                pitch = statemanager.smoothpitch
+            end
+        end
+        return pitch
+    end,
+    calculateroll = function()
+        local roll = 0
+        if settings.angletype == "tilt 45" then
+            roll = math.rad(45)
+        elseif settings.angletype == "tilt 90" then
+            roll = math.rad(90)
+        elseif settings.angletype == "upside down" then
+            roll = math.rad(180)
+        elseif settings.angletype == "custom" then
+            roll = math.rad(settings.customangle)
+        end
+        return roll
+    end
+}
+
+local function updantiaim(deltatime)
+    if not settings.enabled then return end
+    if getgenv().InstanceConfigLoading then return end
+    if getgenv().InstanceConfigLoading == nil then return end
+    if settings.yawtype == "none" and settings.pitchtype == "none" and settings.angletype == "none" then
+        return
+    end
+    local curweap = curweap2()
+    if not curweap then return end
+    local character = localplayer.Character
+    if not character then return end
+    local rootpart = character:FindFirstChild("HumanoidRootPart")
+    if not rootpart then return end
+    statemanager.framecounter = statemanager.framecounter + 1
+    local calculatedyaw = antiaim.calculateyaw(deltatime)
+    local calculatedpitch = antiaim.calculatepitch()
+    local calculatedroll = antiaim.calculateroll()
+    local rotationcframe = CFrame.Angles(calculatedpitch, calculatedyaw, calculatedroll)
+    rootpart.CFrame = rootpart.CFrame * rotationcframe
+end
+
+local function flushAntiAimMovementState()
+    underground_oldpos = nil
+    statemanager.framecounter = 0
+    statemanager.smoothyaw = 0
+    statemanager.smoothpitch = 0
+    statemanager.smoothroll = 0
+    resetHeadBackwardsMotors()
+    local char = localplayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        pcall(function()
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+end
+
+getgenv().InstanceFlushMovementState = function()
+    flushAntiAimMovementState()
+    if getgenv().InstanceCleanupMovement then
+        pcall(getgenv().InstanceCleanupMovement)
+    else
+        _G.keyheldcframe = false
+        _G.keyheldcframefly = false
+    end
+end
+
+getgenv().InstanceSyncAfterConfigLoad = function()
+    if getgenv().InstanceFlushMovementState then
+        pcall(getgenv().InstanceFlushMovementState)
+    end
+    _G.keyheldcframe = false
+    _G.keyheldcframefly = false
+    if Toggles and Toggles.AntiAimEnable then
+        settings.enabled = Toggles.AntiAimEnable.Value == true
+    else
+        settings.enabled = false
+    end
+    if Toggles and Toggles.AntiAimUnderground then
+        underground_enabled = Toggles.AntiAimUnderground.Value == true
+        getgenv().InstanceUndergroundEnabled = underground_enabled
+        if not underground_enabled then
+            underground_oldpos = nil
+        end
+    else
+        underground_enabled = false
+        getgenv().InstanceUndergroundEnabled = false
+        underground_oldpos = nil
+    end
+    if Options and Options.AntiAimYaw then
+        settings.yawtype = Options.AntiAimYaw.Value or "none"
+    end
+    if Options and Options.AntiAimPitch then
+        settings.pitchtype = Options.AntiAimPitch.Value or "none"
+    end
+    if Options and Options.AntiAimAngle then
+        settings.angletype = Options.AntiAimAngle.Value or "none"
+    end
+    if not settings.enabled or (settings.yawtype == "none" and settings.pitchtype == "none" and settings.angletype == "none") then
+        flushAntiAimMovementState()
+        underground_oldpos = nil
+    end
+end
+
+localplayer.CharacterAdded:Connect(function()
+    task.defer(flushAntiAimMovementState)
+end)
+
+getgenv().InstanceSetUnderground = function(val)
+    underground_enabled = val
+    getgenv().InstanceUndergroundEnabled = val
+    if not val then
+        underground_oldpos = nil
+    end
+end
+
+runservice.Heartbeat:Connect(updantiaim)
+
+-- Device Spoofer & Slide Boost Data Structures
+_G.Features = _G.Features or {}
+_G.Features.DeviceSpoof = _G.Features.DeviceSpoof or {
+    Enabled = false,
+    CurrentDevice = "Console",
+    LastApplied = 0
+}
+_G.Features.SlideBoost = _G.Features.SlideBoost or {
+    Enabled = false,
+    Speed = 300
+}
+
+local devicecfgs = {
+    ["Mobile"] = {
+        Display = "Mobile",
+        Code = "Touch"
+    },
+    ["Console"] = {
+        Display = "Console",
+        Code = "Gamepad"
+    },
+    ["VR"] = {
+        Display = "VR",
+        Code = "VR"
+    },
+    ["PC"] = {
+        Display = "PC",
+        Code = "MouseKeyboard"
+    }
+}
+
+local function dtcrealdevice()
+    local inputType = UserInputService:GetLastInputType()
+    if inputType == Enum.UserInputType.Touch then
+        return "Mobile"
+    elseif inputType == Enum.UserInputType.Gamepad1 then
+        return "Console"
+    elseif inputType == Enum.UserInputType.VR then
+        return "VR"
+    else
+        return "PC"
+    end
+end
+
+local function applydevice()
+    if not _G.Features.DeviceSpoof.Enabled then 
+        return 
+    end
+    local device = _G.Features.DeviceSpoof.CurrentDevice
+    local devicecfg = devicecfgs[device]
+    if not devicecfg then return end
+    local curtime = tick()
+    if curtime - _G.Features.DeviceSpoof.LastApplied < 0.5 then
+        return
+    end
+    _G.Features.DeviceSpoof.LastApplied = curtime
+    for attempt = 1, 3 do
+        local success = pcall(function()
+            local remotes = game:GetService("ReplicatedStorage")
+            if remotes:FindFirstChild("Remotes") then
+                remotes = remotes.Remotes
+                if remotes:FindFirstChild("Replication") then
+                    remotes = remotes.Replication
+                    if remotes:FindFirstChild("Fighter") then
+                        remotes = remotes.Fighter
+                        if remotes:FindFirstChild("SetControls") then
+                            remotes.SetControls:FireServer(devicecfg.Code)
+                            return true
+                        end
+                    end
+                end
+            end
+            return false
+        end)
+        if success then
+            break
+        else
+            task.wait(0.2)
+        end
+    end
+end
+
+local function reapplydevice()
+    if not _G.Features.DeviceSpoof.Enabled then return end
+    local curtime = tick()
+    if curtime - _G.Features.DeviceSpoof.LastApplied > 30 then
+        applydevice()
+    end
+end
+
+task.spawn(function()
+    local RunService = game:GetService("RunService")
+    local Players = game:GetService("Players")
+    local LocalPlayer = Players.LocalPlayer
+    while not LocalPlayer do
+        task.wait()
+        LocalPlayer = Players.LocalPlayer
+    end
+    local mech
+    while true do
+        local success, result = pcall(function()
+            return require(LocalPlayer.PlayerScripts.Controllers.MechanicsController)
+        end)
+        if success then
+            mech = result
+            break
+        end
+        task.wait(1)
+    end
+    local connection
+    connection = RunService.RenderStepped:Connect(function()
+        if _G.Features.SlideBoost.Enabled and mech and mech.IsSliding then
+            local success = pcall(function()
+                mech._sliding_velocity.Velocity = mech._sliding_velocity.Velocity.Unit * _G.Features.SlideBoost.Speed
+            end)
+            if not success then
+                local newSuccess, newMech = pcall(function()
+                    return require(LocalPlayer.PlayerScripts.Controllers.MechanicsController)
+                end)
+                if newSuccess then
+                    mech = newMech
+                end
+            end
+        end
+    end)
+    game:GetService("Players").PlayerRemoving:Connect(function(player)
+        if player == LocalPlayer then
+            connection:Disconnect()
+        end
+    end)
+end)
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    if _G.Features.DeviceSpoof.Enabled then
+        task.wait(0.5)
+        applydevice()
+    end
+end)
+
+task.spawn(function()
+    game:GetService("ReplicatedStorage"):WaitForChild("Remotes", 10)
+    task.wait(2)
+    if _G.Features.DeviceSpoof.Enabled then
+        applydevice()
+    end
+end)
+
+-- ============================================
 -- UI BINDINGS & COLUMNS SETUP
 -- ============================================
 
@@ -2327,6 +2775,16 @@ PlayerCol:AddSwitch({
     end
 })
 
+-- 신규: 안티보이드 (Anti-Void / Underground)
+PlayerCol:AddSwitch({
+    Name = "Anti-Void (낙사 방지)",
+    Default = false,
+    Callback = function(Value)
+        getgenv().InstanceSetUnderground(Value)
+        createNotification(Value and "Anti-Void 활성화" or "Anti-Void 비활성화")
+    end
+})
+
 -- 3. 비주얼탭
 local VisualCol = Library:CreateColumn("비주얼탭")
 
@@ -2336,6 +2794,16 @@ VisualCol:AddSwitch({
     Callback = function(Value)
         HUD_DISPLAY_ENABLED = Value
         updateKeybindsList()
+    end
+})
+
+-- 신규: Hit 표시 토글
+VisualCol:AddSwitch({
+    Name = "Hit 표시 (Hit Marker)",
+    Default = false,
+    Callback = function(Value)
+        HIT_INDICATOR_ENABLED = Value
+        createNotification(Value and "Hit 표시 ON" or "Hit 표시 OFF")
     end
 })
 
@@ -2408,6 +2876,49 @@ AnimMatchCol:AddDropdown({
     Default = "1v1",
     Callback = function(Options)
         AUTO_MATCH_MODE = Options[1]
+    end
+})
+
+-- 신규: 기기 스푸퍼 & 레벨 스푸퍼 컬럼
+local SpoofCol = Library:CreateColumn("스푸퍼탭")
+
+SpoofCol:AddSwitch({
+    Name = "Device Spoof 활성화",
+    Default = false,
+    Callback = function(Value)
+        _G.Features.DeviceSpoof.Enabled = Value
+        if Value then applydevice() end
+        createNotification(Value and "Device Spoof ON" or "Device Spoof OFF")
+    end
+})
+
+SpoofCol:AddDropdown({
+    Name = "기기 선택 (Device)",
+    Options = {"PC", "Mobile", "Console", "VR"},
+    Default = "Console",
+    Callback = function(Options)
+        _G.Features.DeviceSpoof.CurrentDevice = Options[1]
+        if _G.Features.DeviceSpoof.Enabled then applydevice() end
+        createNotification("기기 변경: " .. Options[1])
+    end
+})
+
+SpoofCol:AddSlider({
+    Name = "레벨 스푸퍼 설정",
+    Min = 1,
+    Max = 1000,
+    Default = 100,
+    Suffix = " Lv",
+    Callback = function(Value)
+        LEVEL_SPOOF_VALUE = Value
+        pcall(function()
+            local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+            if leaderstats then
+                local levelVal = leaderstats:FindFirstChild("Level") or leaderstats:FindFirstChild("Lv")
+                if levelVal then levelVal.Value = Value end
+            end
+        end)
+        createNotification("레벨 설정: " .. Value)
     end
 })
 
@@ -2507,6 +3018,17 @@ local function onCharacterAdded(character)
     if envConfig.shaderEnabled then applyGlassReflection() end
     if envConfig.skyboxEnabled then toggleSkybox() end
     if envConfig.waterEnabled then toggleWater() end
+    
+    if LEVEL_SPOOF_VALUE then
+        pcall(function()
+            local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+            if leaderstats then
+                local levelVal = leaderstats:FindFirstChild("Level") or leaderstats:FindFirstChild("Lv")
+                if levelVal then levelVal.Value = LEVEL_SPOOF_VALUE end
+            end
+        end)
+    end
+    
     updateKeybindsList()
 end
 

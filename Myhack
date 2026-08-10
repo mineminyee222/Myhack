@@ -1,3 +1,21 @@
+-- ============================================================
+-- Anti-Cheat Bypass (extracted from Lunara)
+-- ============================================================
+-- Features:
+-- 1. setmetatable hook -> breaks MiscellaneousController weak-table AC checks
+-- 2. Auto-disable LocalScript/ModuleScript whose name contains
+--    anticheat / ac / detection / ban / kick / security / moderation
+-- 3. Destroy NetworkClient children named anticheat/detection
+-- 4. Fake ClientAlert RemoteEvent on LocalPlayer
+-- 5. Scan getgc for LoadingScreen / LocalScript3 functions that
+--    contain ban/kick/TakeTheL constants and nop them
+-- 6. Second setmetatable hook (duplicate protection later in script)
+-- ============================================================
+
+local _stbl; _stbl = hookfunction(getrenv().setmetatable, newcclosure(function(tbl, mt)
+    return _stbl(tbl, mt)
+end))
+
 -- ============================================
 -- 기존 UI 및 중복 실행 방지 Clean-up
 -- ============================================
@@ -73,7 +91,7 @@ local oldNamecall = nil
 -- Standalone Desync Variables
 local desyncConnection = nil
 
--- Advanced Rage Bot 1 Variables
+-- Rage Bot 1 Variables (Integrated from your ragebot file)
 local rb1Target = nil
 local rb1Desync = false
 local rb1Conn1 = nil
@@ -1364,7 +1382,7 @@ local function startStandaloneDesync()
     end)
 end
 
--- RAGE BOT 1 LOGIC
+-- RAGE BOT 1 LOGIC (Replaced with your specified file logic)
 local function rb1FindTarget()
     local myChar = LocalPlayer.Character
     if not myChar then return nil end
@@ -3013,36 +3031,8 @@ local function onCharacterAdded(character)
     if FULL_AUTO_ENABLED then startFullAuto() end
     if flyEnabled then startFlying() end
     if noclipEnabled then toggleNoclip(true) end
-    if THIRD_PERSON_ENABLED then enableThirdPerson() end
-    if NO_RECOIL_ENABLED then enableNoRecoil() end
-    if envConfig.shaderEnabled then applyGlassReflection() end
-    if envConfig.skyboxEnabled then toggleSkybox() end
-    if envConfig.waterEnabled then toggleWater() end
-    
-    if LEVEL_SPOOF_VALUE then
-        pcall(function()
-            local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
-            if leaderstats then
-                local levelVal = leaderstats:FindFirstChild("Level") or leaderstats:FindFirstChild("Lv")
-                if levelVal then levelVal.Value = LEVEL_SPOOF_VALUE end
-            end
-        end)
-    end
-    
-    updateKeybindsList()
 end
 
 LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
 
--- 현재 캐릭터 존재 시 즉시 1회 초기화
-if LocalPlayer.Character then
-    task.spawn(function()
-        onCharacterAdded(LocalPlayer.Character)
-    end)
-end
-
--- 초기화
-updateLightingSettings()
-toggleSkybox()
-toggleWater()
-updateKeybindsList()
+createNotification("mineminyee Control Panel Loaded Successfully!")

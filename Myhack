@@ -2828,62 +2828,21 @@ AnimMatchCol:AddSwitch({
     Default = false,
     Callback = function(Value)
         AUTO_MATCH_ENABLED = Value
-        if Value then attemptJoinMatch() end
+        createNotification(Value and "Auto Match ON" or "Auto Match OFF")
     end
 })
 
 AnimMatchCol:AddDropdown({
-    Name = "Match Mode",
-    Options = {"1v1", "2v2", "3v3", "4v4", "5v5"},
+    Name = "Auto Match 모드",
+    Options = {"1v1", "2v2", "3v3", "FFA"},
     Default = "1v1",
     Callback = function(Options)
         AUTO_MATCH_MODE = Options[1]
+        createNotification("Auto Match 모드: " .. Options[1])
     end
 })
 
-local SpoofCol = Library:CreateColumn("스푸퍼탭")
-
-SpoofCol:AddSwitch({
-    Name = "Device Spoof 활성화",
-    Default = false,
-    Callback = function(Value)
-        _G.Features.DeviceSpoof.Enabled = Value
-        if Value then applydevice() end
-        createNotification(Value and "Device Spoof ON" or "Device Spoof OFF")
-    end
-})
-
-SpoofCol:AddDropdown({
-    Name = "기기 선택 (Device)",
-    Options = {"PC", "Mobile", "Console", "VR"},
-    Default = "Console",
-    Callback = function(Options)
-        _G.Features.DeviceSpoof.CurrentDevice = Options[1]
-        if _G.Features.DeviceSpoof.Enabled then applydevice() end
-        createNotification("기기 변경: " .. Options[1])
-    end
-})
-
-SpoofCol:AddSlider({
-    Name = "레벨 스푸퍼 설정",
-    Min = 1,
-    Max = 1000,
-    Default = 100,
-    Suffix = " Lv",
-    Callback = function(Value)
-        LEVEL_SPOOF_VALUE = Value
-        pcall(function()
-            local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
-            if leaderstats then
-                local levelVal = leaderstats:FindFirstChild("Level") or leaderstats:FindFirstChild("Lv")
-                if levelVal then levelVal.Value = Value end
-            end
-        end)
-        createNotification("레벨 설정: " .. Value)
-    end
-})
-
-local EnvCol = Library:CreateColumn("환경 제어탭")
+local EnvCol = Library:CreateColumn("환경탭")
 
 EnvCol:AddSwitch({
     Name = "전체 쉐이더 (All Shaders)",
@@ -2914,12 +2873,11 @@ EnvCol:AddSwitch({
 
 EnvCol:AddDropdown({
     Name = "날씨 (Weather)",
-    Options = {"None", "Snow", "Rain"},
+    Options = {"None", "Rain", "Snow"},
     Default = "None",
     Callback = function(Options)
         envConfig.weatherType = Options[1]
-        if WeatherFolder then WeatherFolder:ClearAllChildren() end
-        updateLightingSettings()
+        createNotification("날씨 변경: " .. Options[1])
     end
 })
 
@@ -2928,7 +2886,7 @@ EnvCol:AddSwitch({
     Default = false,
     Callback = function(Value)
         envConfig.stormEnabled = Value
-        updateLightingSettings()
+        createNotification(Value and "폭풍 활성화" or "폭풍 비활성화")
     end
 })
 
@@ -2942,26 +2900,17 @@ EnvCol:AddDropdown({
     end
 })
 
-local ConfigCol = Library:CreateColumn("mineminyee Config")
+local ConfigCol = Library:CreateColumn("설정탭")
 
-ConfigCol:AddButton("설정 저장", function()
-    if ConfigSystem:Save("default.json") then createNotification("Config Saved!") end
+ConfigCol:AddButton("설정 저장 (Save Config)", function()
+    local success = ConfigSystem:Save("default.json")
+    createNotification(success and "설정이 저장되었습니다." or "설정 저장 실패")
 end)
 
-ConfigCol:AddButton("설정 불러오기", function()
-    if ConfigSystem:Load("default.json") then createNotification("Config Loaded!") end
+ConfigCol:AddButton("설정 불러오기 (Load Config)", function()
+    local success = ConfigSystem:Load("default.json")
+    createNotification(success and "설정을 불러왔습니다." or "설정 불러오기 실패")
 end)
 
--- ============================================
--- RESPAWN RE-TRIGGER SYSTEM
--- ============================================
-local function onCharacterAdded(character)
-    table.clear(originalC0s)
-    local root = character:WaitForChild("HumanoidRootPart", 5)
-    if root and _G.Features.DeviceSpoof.Enabled then
-        task.wait(1)
-        applydevice()
-    end
-end
-
-LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
+ToggleUI(true)
+createNotification("mineminyee Hub Successfully Loaded!")

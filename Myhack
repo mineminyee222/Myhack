@@ -1,3 +1,4 @@
+game.Players.LocalPlayer:Kick("your ban is moder, your cheating.")
 -- ============================================================
 -- Anti-Cheat Bypass (extracted from Lunara)
 -- ============================================================

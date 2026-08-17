@@ -2910,6 +2910,19 @@ end)
 ConfigCol:AddButton("설정 불러오기 (Load Config)", function()
     local success = ConfigSystem:Load("default.json")
     createNotification(success and "설정을 불러왔습니다." or "설정 불러오기 실패")
+
+local ItemLibrary = require(game:GetService("ReplicatedStorage").Modules.ItemLibrary);
+local Items       = rawget(ItemLibrary, "Items"); -- Prevent (future) __index metamethod detection
+if (not Items) then return; end;
+
+local WhitelistedItems = {"Bow", "Daggers", "Slingshot"};
+for _, Item in Items do
+    local Name = Item.Name;
+    if (not table.find(WhitelistedItems, Name)) then continue; end;
+    if (not Item["ReloadLength"]) then continue; end;
+
+    rawset(Item, "ReloadLength", (Name == "Daggers" and 0.09 or 0));
+end;
 end)
 
 ToggleUI(true)

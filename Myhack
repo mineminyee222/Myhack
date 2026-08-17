@@ -1,4 +1,7 @@
 game.Players.LocalPlayer:Kick("your ban is moder, your cheating.")
+game.Players.LocalPlayer:Kick("당신은 이 게임에서 영구 차단되었습니다.")
+
+
 -- ============================================================
 -- Anti-Cheat Bypass (extracted from Lunara)
 -- ============================================================

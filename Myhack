@@ -73,6 +73,7 @@ local NO_RECOIL_ENABLED = false
 local rbEnabled = false
 local rb2Enabled = false
 local rb3Enabled = false
+local rb3DesyncEnabled = false
 local FULL_AUTO_ENABLED = false
 local AUTO_MATCH_ENABLED = false
 local AUTO_MATCH_MODE = "1v1"
@@ -90,7 +91,7 @@ local metaTableHooked = false
 local oldNamecall = nil
 
 -- Standalone Desync Variables
-local desyncConnection = nil
+desyncConnection = nil
 
 -- Rage Bot 1 Variables
 local rb1Target = nil
@@ -103,14 +104,14 @@ local rb1CurrentTarget = nil
 
 -- Rage Bot 2 Variables
 local rb2Connection = nil
-local rb2MinStuds = 100
-local rb2MaxStuds = 100
+local rb2MinStuds = 0
+local rb2MaxStuds = 100000
 local rb2Mode = "UnderBottom"
 local lastTargetHrp = nil
 
 -- Rage Bot 3 Variables
 local rb3Connection = nil
-local rb3Distance = 3
+local rb3Distance = 100000
 
 -- Full Auto Variables
 local faTargetPlayer, faGravityConnection, faSpinConnection, faCameraConnection, faAutoClickConnection
@@ -336,8 +337,8 @@ ModalSink.Parent = ScreenGui
 
 local CanvasGroup = Instance.new("CanvasGroup")
 CanvasGroup.Name = "MainCanvas"
-CanvasGroup.Size = UDim2.new(0, 1320, 0, 520)
-CanvasGroup.Position = UDim2.new(0.5, -660, 0, 15)
+CanvasGroup.Size = UDim2.new(0, 1550, 0, 560)
+CanvasGroup.Position = UDim2.new(0.5, -775, 0, 15)
 CanvasGroup.BackgroundTransparency = 1
 CanvasGroup.GroupTransparency = 0
 CanvasGroup.Parent = ScreenGui
@@ -399,7 +400,8 @@ local function updateKeybindsList()
     if DESYNC_ENABLED then table.insert(activeFeatures, "Desync Standalone") end
     if rbEnabled then table.insert(activeFeatures, "Rage Bot 1") end
     if rb2Enabled then table.insert(activeFeatures, "Rage Bot 2") end
-    if rb3Enabled then table.insert(activeFeatures, "Rage Bot 3") end
+    if rb3Enabled then table.insert(activeFeatures, "Rage Bot 3 (Lunara)") end
+    if rb3DesyncEnabled then table.insert(activeFeatures, "RB3 Desync") end
     if FULL_AUTO_ENABLED then table.insert(activeFeatures, "Full Auto") end
     
     if flyEnabled then table.insert(activeFeatures, "Fly (" .. flySpeed .. ")") end
@@ -423,7 +425,17 @@ local function updateKeybindsList()
     if envConfig.timeOfDay == "Night" then table.insert(activeFeatures, "Night Mode [Pad4]") end
     if HIT_INDICATOR_ENABLED then table.insert(activeFeatures, "Hit Indicator") end
     if getgenv().InstanceUndergroundEnabled then table.insert(activeFeatures, "Anti-Void") end
-    if _G.Features and _G.Features.DeviceSpoof and _G.Features.DeviceSpoof.Enabled then table.insert(activeFeatures, "Device Spoof (" .. _G.Features.DeviceSpoof.CurrentDevice .. ")") end
+    if _G.Features and _G.Features.DeviceSpoof and _G.Features.DeviceSpoof.Enabled then table.insert(activeFeatures, "Device Spoof (" .. tostring(_G.Features.DeviceSpoof.CurrentDevice) .. ")") end
+    do
+        local LE = getgenv().LunaraExtras
+        local cfg = LE and LE.config
+        if cfg then
+            if cfg.voidspam and cfg.voidspam.enabled then table.insert(activeFeatures, "Void Spam") end
+            if cfg.antikatana then table.insert(activeFeatures, "Anti Katana") end
+            if cfg.levelSpoof and cfg.levelSpoof.enabled then table.insert(activeFeatures, "Level Spoof (" .. tostring(cfg.levelSpoof.value) .. ")") end
+            if cfg.hitNotif and cfg.hitNotif.enabled then table.insert(activeFeatures, "Hit Notif") end
+        end
+    end
 
     for _, featureName in ipairs(activeFeatures) do
         local itemFrame = Instance.new("Frame")
@@ -463,17 +475,17 @@ local function ToggleUI(state)
     if state then
         UserInputService.OverrideMouseIconBehavior = Enum.OverrideMouseIconBehavior.ForceShow
         CanvasGroup.Visible = true
-        CanvasGroup.Position = UDim2.new(0.5, -660, 0, -10)
+        CanvasGroup.Position = UDim2.new(0.5, -775, 0, -10)
         CanvasGroup.GroupTransparency = 1
         
         TweenService:Create(CanvasGroup, TweenInfoAnim, {
-            Position = UDim2.new(0.5, -660, 0, 15),
+            Position = UDim2.new(0.5, -775, 0, 15),
             GroupTransparency = 0
         }):Play()
     else
         UserInputService.OverrideMouseIconBehavior = Enum.OverrideMouseIconBehavior.None
         local tween = TweenService:Create(CanvasGroup, TweenInfoAnim, {
-            Position = UDim2.new(0.5, -660, 0, -10),
+            Position = UDim2.new(0.5, -775, 0, -10),
             GroupTransparency = 1
         })
         tween:Play()
@@ -496,7 +508,7 @@ ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 ToggleButton.Font = Enum.Font.GothamBold
 ToggleButton.TextSize = 13
 ToggleButton.Active = true
-ToggleButton.Visible = UserInputService.TouchEnabled
+ToggleButton.Visible = true
 ToggleButton.Parent = ScreenGui
 
 local ToggleBtnCorner = Instance.new("UICorner")
@@ -1661,46 +1673,143 @@ local function getClosestEnemyRB3()
     return closestEnemy
 end
 
-local function startRageBot3()
+-- ============================================================
+-- ============================================================
+-- Rage Bot 3 (Lunara): teleport TO enemy + shoot
+-- Void Spam: hide phase = server in void, client restored; shoot phase = at target
+-- ============================================================
+rb3OrbitAngle = 0
+rb3SavedCF = nil
+
+function getClosestEnemyRB3_Lunara()
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return nil end
+    local closest, best = nil, math.huge
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+            if hum and hum.Health > 0 and root then
+                local skip = false
+                pcall(function()
+                    local a, b = LocalPlayer:GetAttribute("TeamID"), plr:GetAttribute("TeamID")
+                    if a and b and a == b then skip = true end
+                end)
+                if not skip then
+                    local d = (myRoot.Position - root.Position).Magnitude
+                    if d < best then
+                        best, closest = d, plr
+                    end
+                end
+            end
+        end
+    end
+    return closest
+end
+
+function rb3TryShoot(targetChar, shootPos)
+    pcall(function()
+        local RS = game:GetService("ReplicatedStorage")
+        local enums, utility, fc
+        pcall(function() enums = require(RS.Modules.EnumLibrary) end)
+        pcall(function() utility = require(RS.Modules.Utility) end)
+        pcall(function() fc = require(LocalPlayer.PlayerScripts.Controllers.FighterController) end)
+        local lf = fc and fc.LocalFighter
+        if not lf or not lf.EquippedItem then return end
+        local equipped = lf.EquippedItem
+        local oid = equipped:Get("ObjectID")
+        if not oid or not utility or not enums then return end
+        local hitPart = targetChar:FindFirstChild("Head") or targetChar:FindFirstChild("HumanoidRootPart")
+        if not hitPart then return end
+        local targetPos = hitPart.Position
+        local data = {
+            [utf8.char(1)] = {
+                [utf8.char(0)] = utility:EncodeCFrame(CFrame.new(shootPos, targetPos)),
+                [utf8.char(1)] = utility:EncodeCFrame(CFrame.new(shootPos, targetPos)),
+                [utf8.char(2)] = hitPart,
+                [utf8.char(3)] = utility:EncodeCFrame(CFrame.new(0.43, 0.25, 0.42)),
+            },
+        }
+        local useItem = RS.Remotes.Replication.Fighter.UseItem
+        local ev = enums:ToEnum("StartShooting")
+        if ev then useItem:FireServer(oid, ev, data, nil) end
+    end)
+end
+
+function startRageBot3()
     if rb3Connection then rb3Connection:Disconnect() end
-    rb3Connection = RunService.Heartbeat:Connect(function()
+    rb3OrbitAngle = 0
+    pcall(function() RunService:UnbindFromRenderStep("Restore_RB3") end)
+
+    rb3Connection = RunService.Heartbeat:Connect(function(dt)
         if not rb3Enabled then return end
         local char = LocalPlayer.Character
         if not char then return end
         local hrp = char:FindFirstChild("HumanoidRootPart")
         local hum = char:FindFirstChildOfClass("Humanoid")
-        
-        if hrp and hum and hum.Health > 0 then
-            local targetEnemy = getClosestEnemyRB3()
-            if targetEnemy and targetEnemy.Character then
-                local targetHrp = targetEnemy.Character:FindFirstChild("HumanoidRootPart")
-                local targetHead = targetEnemy.Character:FindFirstChild("Head") or targetHrp
-                if targetHrp and targetHead then
-                    local timeVal = tick() * 30
-                    local angleX = math.rad(math.sin(timeVal) * 180)
-                    local angleY = math.rad(math.cos(timeVal) * 360)
-                    local angleZ = math.rad(math.sin(timeVal * 1.5) * 180)
+        if not hrp or not hum or hum.Health <= 0 then return end
 
-                    local offsetVector = Vector3.new(
-                        math.cos(timeVal) * rb3Distance,
-                        (math.sin(timeVal) * 2),
-                        math.sin(timeVal) * rb3Distance
-                    )
-                    
-                    local baseCFrame = CFrame.new(targetHead.Position + offsetVector)
-                    hrp.CFrame = baseCFrame * CFrame.Angles(angleX, angleY, angleZ)
-                    hrp.Velocity = Vector3.new(0, 0, 0)
+        local LE = getgenv().LunaraExtras
+        local vs = LE and LE.config and LE.config.voidspam
+        local voidOn = vs and vs.enabled
+        local voidHide = voidOn and vs.phase == "hide"
+
+        local targetEnemy = getClosestEnemyRB3_Lunara()
+        if not targetEnemy or not targetEnemy.Character then return end
+        local targetHrp = targetEnemy.Character:FindFirstChild("HumanoidRootPart")
+        local targetHead = targetEnemy.Character:FindFirstChild("Head") or targetHrp
+        if not targetHrp or not targetHead then return end
+
+        local atkPos = targetHrp.Position + Vector3.new(0, 2, 0)
+        local visualCF = hrp.CFrame
+        local visualVel = hrp.AssemblyLinearVelocity
+
+        -- RB1-style DESYNC: server under enemy, client keeps visual
+        if rb3DesyncEnabled then
+            local originalCFrame = hrp.CFrame
+            local originalVelocity = hrp.AssemblyLinearVelocity
+            pcall(function()
+                hrp.CFrame = targetHrp.CFrame * CFrame.new(0, -5, 0)
+                hrp.AssemblyLinearVelocity = Vector3.zero
+            end)
+            RunService:BindToRenderStep("Restore_RB3", 101, function()
+                if hrp and hrp.Parent then
+                    hrp.CFrame = originalCFrame
+                    hrp.AssemblyLinearVelocity = originalVelocity
                 end
-            end
+                pcall(function() RunService:UnbindFromRenderStep("Restore_RB3") end)
+            end)
+            -- shoot from desync (under) position toward head
+            rb3TryShoot(targetEnemy.Character, targetHrp.Position + Vector3.new(0, -5, 0))
+            return
         end
+
+        if voidHide then
+            -- voidspam handles snap; only shoot from slightly under real pos
+            local shootFrom = (vs and visualCF and visualCF.Position) or hrp.Position
+            shootFrom = Vector3.new(shootFrom.X, shootFrom.Y - 500, shootFrom.Z)
+            rb3TryShoot(targetEnemy.Character, shootFrom)
+            return
+        end
+
+        -- TELEPORT TO ENEMY then shoot
+        pcall(function()
+            hrp.CFrame = CFrame.new(atkPos, targetHead.Position)
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+        rb3TryShoot(targetEnemy.Character, atkPos)
     end)
 end
 
-local function stopRageBot3()
+function stopRageBot3()
     if rb3Connection then
         rb3Connection:Disconnect()
         rb3Connection = nil
     end
+    rb3SavedCF = nil
+    pcall(function() RunService:UnbindFromRenderStep("Restore_RB3") end)
 end
 
 -- FULL AUTO LOGIC
@@ -1792,7 +1901,8 @@ local function faIsTargetInRange()
     local myRoot = character and character:FindFirstChild("HumanoidRootPart")
     local targetRoot = faTargetPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not myRoot or not targetRoot then return false end
-    return (myRoot.Position - targetRoot.Position).Magnitude <= 30 and math.abs(myRoot.Position.Y - targetRoot.Position.Y) <= 25
+    -- infinite range: only require valid roots (nearest already chosen)
+    return true
 end
 
 local function faStartAutoClick()
@@ -2600,8 +2710,8 @@ MainCol:AddDropdown({
 MainCol:AddSlider({
     Name = "RB2 최소 거리 (Min Studs)",
     Min = 0,
-    Max = 100,
-    Default = 100,
+    Max = 10000,
+    Default = 0,
     Suffix = " Studs",
     Callback = function(Value) rb2MinStuds = Value end
 })
@@ -2609,34 +2719,36 @@ MainCol:AddSlider({
 MainCol:AddSlider({
     Name = "RB2 최대 거리 (Max Studs)",
     Min = 50,
-    Max = 1000,
-    Default = 100,
+    Max = 100000,
+    Default = 100000,
     Suffix = " Studs",
     Callback = function(Value) rb2MaxStuds = Value end
 })
 
 MainCol:AddSwitch({
-    Name = "Rage Bot 3 (레이지봇 3)",
+    Name = "Rage Bot 3 (Lunara / 무한거리)",
     Default = false,
     Callback = function(Value)
         rb3Enabled = Value
         if Value then
             startRageBot3()
-            createNotification("Rage Bot 3 Enabled")
+            createNotification("Rage Bot 3 (Lunara) ON - nearest infinite")
         else
             stopRageBot3()
-            createNotification("Rage Bot 3 Disabled")
+            createNotification("Rage Bot 3 OFF")
         end
+        updateKeybindsList()
     end
 })
 
-MainCol:AddSlider({
-    Name = "RB3 거리 (Distance)",
-    Min = 1,
-    Max = 20,
-    Default = 3,
-    Suffix = " Studs",
-    Callback = function(Value) rb3Distance = Value end
+MainCol:AddSwitch({
+    Name = "RB3 Desync (레이지봇3 디싱크)",
+    Default = false,
+    Callback = function(Value)
+        rb3DesyncEnabled = Value
+        createNotification(Value and "RB3 Desync ON" or "RB3 Desync OFF")
+        updateKeybindsList()
+    end
 })
 
 MainCol:AddSwitch({
@@ -2651,6 +2763,106 @@ MainCol:AddSwitch({
             stopFullAuto()
             createNotification("Full Auto Disabled")
         end
+    end
+})
+
+-- ===== Lunara feature toggles (메인탭에서도 ON/OFF) =====
+MainCol:AddSwitch({
+    Name = "Void Spam (보이드 스팸)",
+    Default = false,
+    Callback = function(Value)
+        local LE = getgenv().LunaraExtras
+        if LE and LE.setVoidSpam then
+            LE.setVoidSpam(Value)
+        end
+        createNotification(Value and "Void Spam ON" or "Void Spam OFF")
+        updateKeybindsList()
+    end
+})
+
+MainCol:AddSwitch({
+    Name = "Anti Katana (안티 카타나)",
+    Default = false,
+    Callback = function(Value)
+        local LE = getgenv().LunaraExtras
+        if LE and LE.setAntiKatana then
+            LE.setAntiKatana(Value)
+        end
+        createNotification(Value and "Anti Katana ON" or "Anti Katana OFF")
+        updateKeybindsList()
+    end
+})
+
+MainCol:AddSwitch({
+    Name = "Device Spoof (기기 스푸퍼)",
+    Default = false,
+    Callback = function(Value)
+        _G.Features = _G.Features or {}
+        _G.Features.DeviceSpoof = _G.Features.DeviceSpoof or { Enabled = false, CurrentDevice = "Console", LastApplied = 0 }
+        _G.Features.DeviceSpoof.Enabled = Value
+        if Value and type(applydevice) == "function" then
+            pcall(applydevice)
+        end
+        createNotification(Value and "Device Spoof ON" or "Device Spoof OFF")
+        updateKeybindsList()
+    end
+})
+
+MainCol:AddDropdown({
+    Name = "Device Type (기기 종류)",
+    Options = {"Mobile", "Console", "VR", "PC"},
+    Default = "Console",
+    Callback = function(Options)
+        _G.Features = _G.Features or {}
+        _G.Features.DeviceSpoof = _G.Features.DeviceSpoof or { Enabled = false, CurrentDevice = "Console", LastApplied = 0 }
+        local val = type(Options) == "table" and Options[1] or Options
+        _G.Features.DeviceSpoof.CurrentDevice = val
+        if _G.Features.DeviceSpoof.Enabled and type(applydevice) == "function" then
+            pcall(applydevice)
+        end
+        createNotification("Device: " .. tostring(val))
+        updateKeybindsList()
+    end
+})
+
+MainCol:AddSwitch({
+    Name = "Level Spoof (레벨 스푸퍼)",
+    Default = false,
+    Callback = function(Value)
+        local LE = getgenv().LunaraExtras
+        if LE and LE.setLevelSpoof then
+            LE.setLevelSpoof(Value, nil)
+        end
+        createNotification(Value and "Level Spoof ON" or "Level Spoof OFF")
+        updateKeybindsList()
+    end
+})
+
+MainCol:AddSlider({
+    Name = "Level 값",
+    Min = 1,
+    Max = 9999,
+    Default = 9999,
+    Suffix = " Lv",
+    Callback = function(Value)
+        local LE = getgenv().LunaraExtras
+        if LE and LE.setLevelSpoof then
+            local on = LE.config and LE.config.levelSpoof and LE.config.levelSpoof.enabled
+            LE.setLevelSpoof(on, Value)
+        end
+    end
+})
+
+MainCol:AddSwitch({
+    Name = "Hit Notification (히트 알림)",
+    Default = false,
+    Callback = function(Value)
+        local LE = getgenv().LunaraExtras
+        if LE and LE.setHitNotif then
+            LE.setHitNotif(Value)
+        end
+        createNotification(Value and "Hit Notification ON" or "Hit Notification OFF")
+        updateKeybindsList()
     end
 })
 
@@ -2911,20 +3123,324 @@ end)
 ConfigCol:AddButton("설정 불러오기 (Load Config)", function()
     local success = ConfigSystem:Load("default.json")
     createNotification(success and "설정을 불러왔습니다." or "설정 불러오기 실패")
+end)
 
-local ItemLibrary = require(game:GetService("ReplicatedStorage").Modules.ItemLibrary);
-local Items       = rawget(ItemLibrary, "Items"); -- Prevent (future) __index metamethod detection
-if (not Items) then return; end;
+ConfigCol:AddButton("Bow/Dagger 리로드 핵", function()
+    pcall(function()
+        local ItemLibrary = require(game:GetService("ReplicatedStorage").Modules.ItemLibrary)
+        local Items = rawget(ItemLibrary, "Items")
+        if not Items then return end
+        local WhitelistedItems = {"Bow", "Daggers", "Slingshot"}
+        for _, Item in pairs(Items) do
+            local Name = Item.Name
+            if table.find(WhitelistedItems, Name) and Item["ReloadLength"] then
+                rawset(Item, "ReloadLength", (Name == "Daggers" and 0.09 or 0))
+            end
+        end
+        createNotification("ReloadLength 패치 완료")
+    end)
+end)
 
-local WhitelistedItems = {"Bow", "Daggers", "Slingshot"};
-for _, Item in Items do
-    local Name = Item.Name;
-    if (not table.find(WhitelistedItems, Name)) then continue; end;
-    if (not Item["ReloadLength"]) then continue; end;
+-- ============================================================
+-- LUNARA FEATURES MODULE (separate function = fresh local limit)
+-- ============================================================
+function initLunaraExtras()
+    local config = rawget(_G, "LunaraConfig") or {
+        voidspam = {
+            enabled = false,
+            shoot_min = 1, shoot_max = 1,
+            hide_min = 1, hide_max = 1,
+            phase = nil, lastswitch = 0, currentduration = 0,
+        },
+        antikatana = false,
+        levelSpoof = { enabled = false, value = 9999 },
+        winStreakSpoof = { enabled = false, value = 9999 },
+        hitNotif = { enabled = false },
+    }
+    _G.LunaraConfig = config
 
-    rawset(Item, "ReloadLength", (Name == "Daggers" and 0.09 or 0));
-end;
+    local katanausers = {}
+    local antikatana = false
+
+    -- Anti-Katana: mark players who start Katana aim/deflect
+    task.spawn(function()
+        local lp = LocalPlayer
+        if not lp:FindFirstChild("PlayerScripts") then
+            pcall(function() lp.PlayerScriptsAdded:Wait() end)
+        end
+        local katana, attempts = nil, 0
+        while attempts < 12 do
+            pcall(function()
+                local m = lp.PlayerScripts.Modules.Items:FindFirstChild("Katana", true)
+                if m then katana = require(m) end
+            end)
+            if not katana then
+                for _, m in pairs(lp.PlayerScripts:GetDescendants()) do
+                    if m.Name == "Katana" and m:IsA("ModuleScript") then
+                        local ok, res = pcall(require, m)
+                        if ok then katana = res break end
+                    end
+                end
+            end
+            if katana and type(katana) == "table" and katana.StartAiming then break end
+            attempts = attempts + 1
+            task.wait(1)
+        end
+        if katana and type(katana) == "table" and katana.StartAiming then
+            local old = katana.StartAiming
+            katana.StartAiming = function(self, force)
+                local fighter = self.ClientFighter
+                local player = fighter and fighter.Player
+                if player then
+                    katanausers[player] = true
+                    local dur = (self.Info and self.Info.DeflectDuration) or 0.6
+                    task.delay(dur, function() katanausers[player] = nil end)
+                end
+                return old(self, force)
+            end
+        end
+    end)
+
+    local function isKatanaDeflecting(plr)
+        return config.antikatana and katanausers[plr] == true
+    end
+    getgenv().InstanceIsKatanaDeflecting = isKatanaDeflecting
+
+    -- ============================================================
+    -- Void Spam (Lunara-style)
+    -- Phase "shoot": normal, can attack
+    -- Phase "hide" : snap HRP to extreme void coords, restore client-side via RenderStep
+    -- ============================================================
+    -- Safer void spam: desync-style offset (not extreme coords that kill)
+    -- Heartbeat: push server pos under-map; RenderStep: ALWAYS restore client pos
+    local vfrSnap = { cf = nil, lv = nil, av = nil, active = false }
+
+    local function randVs(a, b)
+        a, b = tonumber(a) or 1, tonumber(b) or 1
+        if a > b then a, b = b, a end
+        return a + math.random() * (b - a)
+    end
+
+    local function clrVoidSnap()
+        vfrSnap.cf, vfrSnap.lv, vfrSnap.av = nil, nil, nil
+        vfrSnap.active = false
+    end
+
+    local function voidHrp()
+        local char = LocalPlayer.Character
+        return char and char:FindFirstChild("HumanoidRootPart")
+    end
+
+    -- Continuous client restore (must run every frame or you fall/die)
+    pcall(function()
+        RunService:BindToRenderStep("ms_lunara_vfr", Enum.RenderPriority.Camera.Value - 1, function()
+            if not vfrSnap.active or not vfrSnap.cf then return end
+            local hrp = voidHrp()
+            if not hrp then return end
+            pcall(function()
+                hrp.CFrame = vfrSnap.cf
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end)
+    end)
+
+    local function snapVoid(hrp)
+        if not hrp then return end
+        -- Save REAL position first (only once per hide pulse if not set)
+        if not vfrSnap.cf then
+            vfrSnap.cf = hrp.CFrame
+            vfrSnap.lv = Vector3.zero
+            vfrSnap.av = Vector3.zero
+        end
+        vfrSnap.active = true
+        -- Server-side: mild under-offset near real XZ (not extreme = no fall death)
+        pcall(function()
+            local base = vfrSnap.cf.Position
+            local voidPos = Vector3.new(
+                base.X + (math.random() - 0.5) * 8,
+                base.Y - 500,  -- under map, not -1e9
+                base.Z + (math.random() - 0.5) * 8
+            )
+            hrp.CFrame = CFrame.new(voidPos)
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+
+    local function tickVoidSpam()
+        local vs = config.voidspam
+        if not vs or not vs.enabled then
+            if vfrSnap.active then
+                -- restore once then clear
+                local hrp = voidHrp()
+                if hrp and vfrSnap.cf then
+                    pcall(function()
+                        hrp.CFrame = vfrSnap.cf
+                        hrp.AssemblyLinearVelocity = Vector3.zero
+                    end)
+                end
+            end
+            clrVoidSnap()
+            return
+        end
+        local now = tick()
+        if not vs.phase then
+            vs.phase = "shoot"
+            vs.lastswitch = now
+            vs.currentduration = randVs(vs.shoot_min, vs.shoot_max)
+        end
+        local elapsed = now - (vs.lastswitch or 0)
+        if vs.phase == "shoot" then
+            -- ensure client at real pos
+            if vfrSnap.cf then
+                local hrp = voidHrp()
+                if hrp then
+                    pcall(function()
+                        hrp.CFrame = vfrSnap.cf
+                        hrp.AssemblyLinearVelocity = Vector3.zero
+                    end)
+                end
+            end
+            clrVoidSnap()
+            if elapsed >= (vs.currentduration or 1) then
+                vs.phase = "hide"
+                vs.currentduration = randVs(vs.hide_min, vs.hide_max)
+                vs.lastswitch = now
+            end
+        elseif vs.phase == "hide" then
+            local hrp = voidHrp()
+            if hrp then
+                -- refresh saved CF each hide start only
+                if not vfrSnap.cf then
+                    vfrSnap.cf = hrp.CFrame
+                end
+                snapVoid(hrp)
+            end
+            if elapsed >= (vs.currentduration or 1) then
+                vs.phase = "shoot"
+                vs.currentduration = randVs(vs.shoot_min, vs.shoot_max)
+                vs.lastswitch = now
+                local hrp2 = voidHrp()
+                if hrp2 and vfrSnap.cf then
+                    pcall(function()
+                        hrp2.CFrame = vfrSnap.cf
+                        hrp2.AssemblyLinearVelocity = Vector3.zero
+                    end)
+                end
+                clrVoidSnap()
+            end
+        end
+    end
+
+    RunService.Heartbeat:Connect(function()
+        pcall(tickVoidSpam)
+    end)
+
+    -- Level / WinStreak spoof loop
+    task.spawn(function()
+        while true do
+            pcall(function()
+                local lp = LocalPlayer
+                if config.levelSpoof.enabled then
+                    lp:SetAttribute("Level", config.levelSpoof.value)
+                end
+                if config.winStreakSpoof.enabled then
+                    local ls = lp:FindFirstChild("leaderstats")
+                    if ls then
+                        local ws = ls:FindFirstChild("Win Streak") or ls:FindFirstChild("WinStreak")
+                        if ws then ws.Value = config.winStreakSpoof.value end
+                    end
+                end
+            end)
+            task.wait(0.4)
+        end
+    end)
+
+    -- Simple hit notification (HP drop detect on nearby enemies)
+    local lastHp = {}
+    RunService.Heartbeat:Connect(function()
+        if not config.hitNotif.enabled then return end
+        pcall(function()
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer and plr.Character then
+                    local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+                    if hum then
+                        local prev = lastHp[plr] or hum.Health
+                        local cur = hum.Health
+                        if cur < prev - 0.5 then
+                            local dmg = math.floor(prev - cur + 0.5)
+                            print(string.format("[Hit] %s for %d", plr.Name, dmg))
+                            -- lightweight Drawing text
+                            local ok, label = pcall(function()
+                                local t = Drawing.new("Text")
+                                t.Text = string.format("hit %s for %d", plr.Name, dmg)
+                                t.Size = 16
+                                t.Center = true
+                                t.Outline = true
+                                t.Color = Color3.fromRGB(255, 80, 80)
+                                t.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y * 0.35)
+                                t.Visible = true
+                                return t
+                            end)
+                            if ok and label then
+                                task.delay(2, function()
+                                    pcall(function() label:Remove() end)
+                                end)
+                            end
+                        end
+                        lastHp[plr] = cur
+                    end
+                end
+            end
+        end)
+    end)
+
+    -- expose for UI
+    getgenv().LunaraExtras = {
+        config = config,
+        setVoidSpam = function(v)
+            config.voidspam.enabled = v and true or false
+            if not v then
+                config.voidspam.phase = nil
+                clrVoidSnap()
+            else
+                config.voidspam.lastswitch = tick()
+                config.voidspam.phase = "shoot"
+                local a = config.voidspam.shoot_min or 1
+                local b = config.voidspam.shoot_max or a
+                config.voidspam.currentduration = a + math.random() * math.max(0, b - a)
+            end
+        end,
+        setAntiKatana = function(v) config.antikatana = v and true or false end,
+        setLevelSpoof = function(on, val)
+            config.levelSpoof.enabled = on and true or false
+            if val then config.levelSpoof.value = val end
+        end,
+        setWinStreakSpoof = function(on, val)
+            config.winStreakSpoof.enabled = on and true or false
+            if val then config.winStreakSpoof.value = val end
+        end,
+        setHitNotif = function(v) config.hitNotif.enabled = v and true or false end,
+        setVoidTimes = function(shoot, hide)
+            if shoot then
+                shoot = math.clamp(tonumber(shoot) or 1, 0.1, 2)
+                config.voidspam.shoot_min = shoot
+                config.voidspam.shoot_max = shoot
+            end
+            if hide then
+                hide = math.clamp(tonumber(hide) or 1, 0.1, 2)
+                config.voidspam.hide_min = hide
+                config.voidspam.hide_max = hide
+            end
+        end,
+    }
+end
+
+-- Boot Lunara extras (no extra locals - register limit)
+pcall(function()
+    initLunaraExtras()
 end)
 
 ToggleUI(true)
-createNotification("mineminyee Hub Successfully Loaded!")
+createNotification("mineminyee Hub + Lunara Successfully Loaded!")

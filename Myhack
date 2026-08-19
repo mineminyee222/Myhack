@@ -1409,7 +1409,6 @@ local function rb1FindTarget()
     
     local closest = nil
     local closestDist = math.huge
-    local MAX_DISTANCE = 200
     
     for _, player in pairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
@@ -1419,10 +1418,17 @@ local function rb1FindTarget()
             local hum = player.Character:FindFirstChildWhichIsA("Humanoid")
             
             if root and head and hum and hum.Health > 0 then
-                local dist = (myRoot.Position - root.Position).Magnitude
-                if dist <= MAX_DISTANCE and dist < closestDist then
-                    closestDist = dist
-                    closest = player
+                local kat = false
+                pcall(function()
+                    local fn = getgenv().InstanceIsKatanaDeflecting
+                    if fn and fn(player) then kat = true end
+                end)
+                if not kat then
+                    local dist = (myRoot.Position - root.Position).Magnitude
+                    if dist < closestDist then
+                        closestDist = dist
+                        closest = player
+                    end
                 end
             end
         end
@@ -1705,9 +1711,16 @@ function getClosestEnemyRB3_Lunara()
                     if a and b and a == b then skip = true end
                 end)
                 if not skip then
-                    local d = (myRoot.Position - root.Position).Magnitude
-                    if d < best then
-                        best, closest = d, plr
+                    local kat = false
+                    pcall(function()
+                        local fn = getgenv().InstanceIsKatanaDeflecting
+                        if fn and fn(plr) then kat = true end
+                    end)
+                    if not kat then
+                        local d = (myRoot.Position - root.Position).Magnitude
+                        if d < best then
+                            best, closest = d, plr
+                        end
                     end
                 end
             end
@@ -2110,25 +2123,16 @@ local function applyWalkSpeed(val)
     if type(val) == "table" then n = tonumber(val[1] or val.Value) end
     if not n then n = 16 end
     WALK_SPEED = math.clamp(n, 1, 500)
-    local char = LocalPlayer.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        pcall(function()
-            hum.WalkSpeed = WALK_SPEED
-        end)
-    end
+    forceWalkSpeed()
 end
 
-local function forceWalkSpeed()
+function forceWalkSpeed()
     local char = LocalPlayer.Character
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
-    -- force every frame (game often resets WalkSpeed)
     pcall(function()
-        if hum.WalkSpeed ~= WALK_SPEED then
-            hum.WalkSpeed = WALK_SPEED
-        end
+        hum.WalkSpeed = WALK_SPEED
     end)
 end
 
@@ -2138,10 +2142,23 @@ local function startWalkSpeedLoop()
         walkSpeedConnection = nil
     end
     pcall(function() RunService:UnbindFromRenderStep("ms_walkspeed") end)
-    -- Heartbeat + RenderStep (high priority) so game scripts cannot keep old speed
+    -- continuous force
     walkSpeedConnection = RunService.Heartbeat:Connect(forceWalkSpeed)
     pcall(function()
-        RunService:BindToRenderStep("ms_walkspeed", Enum.RenderPriority.Character.Value + 50, forceWalkSpeed)
+        RunService:BindToRenderStep("ms_walkspeed", Enum.RenderPriority.Last.Value, forceWalkSpeed)
+    end)
+    -- hook property if available
+    pcall(function()
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum and not hum:GetAttribute("_wsHooked") then
+            hum:SetAttribute("_wsHooked", true)
+            hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+                if hum.WalkSpeed ~= WALK_SPEED then
+                    hum.WalkSpeed = WALK_SPEED
+                end
+            end)
+        end
     end)
     forceWalkSpeed()
 end
@@ -2150,9 +2167,16 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     task.spawn(function()
         local hum = char:WaitForChild("Humanoid", 8)
         if not hum then return end
-        for _ = 1, 20 do
+        pcall(function()
+            hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+                if hum.WalkSpeed ~= WALK_SPEED then
+                    hum.WalkSpeed = WALK_SPEED
+                end
+            end)
+        end)
+        for _ = 1, 30 do
             pcall(function() hum.WalkSpeed = WALK_SPEED end)
-            task.wait(0.1)
+            task.wait(0.05)
         end
         startWalkSpeedLoop()
     end)
@@ -3240,8 +3264,8 @@ function initLunaraExtras()
     local config = rawget(_G, "LunaraConfig") or {
         voidspam = {
             enabled = false,
-            shoot_min = 1, shoot_max = 1,
-            hide_min = 1, hide_max = 1,
+            shoot_min = 0.4, shoot_max = 0.6,
+            hide_min = 0.25, hide_max = 0.4,
             phase = nil, lastswitch = 0, currentduration = 0,
         },
         antikatana = false,
@@ -3294,18 +3318,27 @@ function initLunaraExtras()
     end)
 
     local function isKatanaDeflecting(plr)
-        return config.antikatana and katanausers[plr] == true
+        if not config.antikatana or not plr then return false end
+        if katanausers[plr] == true then return true end
+        local char = plr.Character
+        if not char then return false end
+        -- attribute / effect checks
+        local ok, def = pcall(function() return char:GetAttribute("Deflecting") or char:GetAttribute("IsDeflecting") end)
+        if ok and def then return true end
+        for _, c in ipairs(char:GetChildren()) do
+            local n = string.lower(c.Name)
+            if n:find("deflect") or n:find("katana") and c:IsA("Tool") then
+                -- tool equipped katana alone is not enough; look for deflect fx
+            end
+            if n:find("deflect") then return true end
+        end
+        return false
     end
     getgenv().InstanceIsKatanaDeflecting = isKatanaDeflecting
 
-    -- ============================================================
-    -- Void Spam (Lunara-style)
-    -- Phase "shoot": normal, can attack
-    -- Phase "hide" : snap HRP to extreme void coords, restore client-side via RenderStep
-    -- ============================================================
-    -- Safer void spam: desync-style offset (not extreme coords that kill)
-    -- Heartbeat: push server pos under-map; RenderStep: ALWAYS restore client pos
-    local vfrSnap = { cf = nil, lv = nil, av = nil, active = false }
+    -- Void Spam (from void_spam.lua reference)
+    local vfrSnap = { cf = nil, lv = nil, av = nil }
+    local vfrLim, vfrDead = 1e8, 1e5
 
     local function randVs(a, b)
         a, b = tonumber(a) or 1, tonumber(b) or 1
@@ -3315,7 +3348,6 @@ function initLunaraExtras()
 
     local function clrVoidSnap()
         vfrSnap.cf, vfrSnap.lv, vfrSnap.av = nil, nil, nil
-        vfrSnap.active = false
     end
 
     local function voidHrp()
@@ -3323,53 +3355,67 @@ function initLunaraExtras()
         return char and char:FindFirstChild("HumanoidRootPart")
     end
 
-    -- Continuous client restore (must run every frame or you fall/die)
+    local function rndSkip(mi, ma, dmi, dma)
+        local val = math.random(mi, ma)
+        local guard = 0
+        while val >= dmi and val <= dma and guard < 30 do
+            val = math.random(mi, ma)
+            guard = guard + 1
+        end
+        return val
+    end
+
+    local function snapVoid(hrp)
+        if not hrp then return end
+        -- save client visual pose every snap
+        vfrSnap.cf = hrp.CFrame
+        vfrSnap.lv = hrp.AssemblyLinearVelocity
+        vfrSnap.av = hrp.AssemblyAngularVelocity
+        local lim, dead = vfrLim, vfrDead
+        pcall(function()
+            local p = Vector3.new(
+                rndSkip(-lim, lim, -dead, dead),
+                rndSkip(-lim, lim, -dead, dead),
+                rndSkip(-lim, lim, -dead, dead)
+            )
+            local v = Vector3.new(
+                rndSkip(-lim, lim, -dead, dead),
+                rndSkip(-lim, lim, -dead, dead),
+                rndSkip(-lim, lim, -dead, dead)
+            )
+            hrp.CFrame = CFrame.new(p) * CFrame.Angles(math.pi, math.pi, math.pi)
+            hrp.AssemblyLinearVelocity = v
+            hrp.AssemblyAngularVelocity = v
+        end)
+    end
+
+    -- client restore ALWAYS while snap active (First priority like original)
     pcall(function()
-        RunService:BindToRenderStep("ms_lunara_vfr", Enum.RenderPriority.Camera.Value - 1, function()
-            if not vfrSnap.active or not vfrSnap.cf then return end
+        RunService:UnbindFromRenderStep("vfr_csync")
+        RunService:UnbindFromRenderStep("ms_lunara_vfr")
+    end)
+    pcall(function()
+        RunService:BindToRenderStep("vfr_csync", Enum.RenderPriority.First.Value, function()
+            if not vfrSnap.cf then return end
             local hrp = voidHrp()
             if not hrp then return end
             pcall(function()
                 hrp.CFrame = vfrSnap.cf
-                hrp.AssemblyLinearVelocity = Vector3.zero
-                hrp.AssemblyAngularVelocity = Vector3.zero
+                hrp.AssemblyLinearVelocity = vfrSnap.lv or Vector3.zero
+                hrp.AssemblyAngularVelocity = vfrSnap.av or Vector3.zero
             end)
         end)
     end)
 
-    local function snapVoid(hrp)
-        if not hrp then return end
-        -- Save REAL position first (only once per hide pulse if not set)
-        if not vfrSnap.cf then
-            vfrSnap.cf = hrp.CFrame
-            vfrSnap.lv = Vector3.zero
-            vfrSnap.av = Vector3.zero
-        end
-        vfrSnap.active = true
-        -- Server-side: mild under-offset near real XZ (not extreme = no fall death)
-        pcall(function()
-            local base = vfrSnap.cf.Position
-            local voidPos = Vector3.new(
-                base.X + (math.random() - 0.5) * 8,
-                base.Y - 500,  -- under map, not -1e9
-                base.Z + (math.random() - 0.5) * 8
-            )
-            hrp.CFrame = CFrame.new(voidPos)
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-        end)
-    end
-
     local function tickVoidSpam()
         local vs = config.voidspam
         if not vs or not vs.enabled then
-            if vfrSnap.active then
-                -- restore once then clear
+            if vfrSnap.cf then
                 local hrp = voidHrp()
-                if hrp and vfrSnap.cf then
+                if hrp then
                     pcall(function()
                         hrp.CFrame = vfrSnap.cf
-                        hrp.AssemblyLinearVelocity = Vector3.zero
+                        hrp.AssemblyLinearVelocity = vfrSnap.lv or Vector3.zero
                     end)
                 end
             end
@@ -3384,16 +3430,6 @@ function initLunaraExtras()
         end
         local elapsed = now - (vs.lastswitch or 0)
         if vs.phase == "shoot" then
-            -- ensure client at real pos
-            if vfrSnap.cf then
-                local hrp = voidHrp()
-                if hrp then
-                    pcall(function()
-                        hrp.CFrame = vfrSnap.cf
-                        hrp.AssemblyLinearVelocity = Vector3.zero
-                    end)
-                end
-            end
             clrVoidSnap()
             if elapsed >= (vs.currentduration or 1) then
                 vs.phase = "hide"
@@ -3403,28 +3439,18 @@ function initLunaraExtras()
         elseif vs.phase == "hide" then
             local hrp = voidHrp()
             if hrp then
-                -- refresh saved CF each hide start only
-                if not vfrSnap.cf then
-                    vfrSnap.cf = hrp.CFrame
-                end
                 snapVoid(hrp)
             end
             if elapsed >= (vs.currentduration or 1) then
                 vs.phase = "shoot"
                 vs.currentduration = randVs(vs.shoot_min, vs.shoot_max)
                 vs.lastswitch = now
-                local hrp2 = voidHrp()
-                if hrp2 and vfrSnap.cf then
-                    pcall(function()
-                        hrp2.CFrame = vfrSnap.cf
-                        hrp2.AssemblyLinearVelocity = Vector3.zero
-                    end)
-                end
                 clrVoidSnap()
             end
         end
     end
 
+    -- phase timer + snap on heartbeat
     RunService.Heartbeat:Connect(function()
         pcall(tickVoidSpam)
     end)

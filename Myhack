@@ -66,52 +66,62 @@ local Camera = Workspace.CurrentCamera
 local TweenInfoAnim = TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 
 -- Global Feature Toggles
-local SILENT_AIM_ENABLED = false
-local THIRD_PERSON_ENABLED = false
-local NO_RECOIL_ENABLED = false
-local rbEnabled = false
-local rb2Enabled = false
-local rb3Enabled = false
-local rb3DesyncEnabled = false
-local FULL_AUTO_ENABLED = false
-local AUTO_FIRE_ENABLED = false
-local AUTO_MATCH_ENABLED = false
-local AUTO_MATCH_MODE = "1v1"
-local HUD_DISPLAY_ENABLED = true
-local DESYNC_ENABLED = false
-local HIT_INDICATOR_ENABLED = false
-local LEVEL_SPOOF_VALUE = 100
+SILENT_AIM_ENABLED = false
+THIRD_PERSON_ENABLED = false
+NO_RECOIL_ENABLED = false
+rbEnabled = false
+rb2Enabled = false
+rb3Enabled = false
+rb3DesyncEnabled = false
+FULL_AUTO_ENABLED = false
+AUTO_FIRE_ENABLED = false
+AUTO_MATCH_ENABLED = false
+AUTO_MATCH_MODE = "1v1"
+HUD_DISPLAY_ENABLED = true
+DESYNC_ENABLED = false
+HIT_INDICATOR_ENABLED = false
+ESP_ENABLED = false
+ESP_BOX = true
+ESP_INFO = true
+ESP_WEAPON = true
+ANIM_ID = "102820461604639"
+animTrack = nil
+animConnection = nil
+espDrawings = {}
+espConnection = nil
+
+LEVEL_SPOOF_VALUE = 100
 
 -- Aim Target Settings
-local AIM_TARGET_MODE = "head"
-local currentRandomTarget = "Head"
-local randomTimerThread = nil
+AIM_TARGET_MODE = "head"
+currentRandomTarget = "Head"
+randomTimerThread = nil
 
-local metaTableHooked = false
-local oldNamecall = nil
+metaTableHooked = false
+oldNamecall = nil
 
 -- Standalone Desync Variables
 desyncConnection = nil
 
 -- Rage Bot 1 Variables
-local rb1Target = nil
-local rb1Desync = false
-local rb1Conn1 = nil
-local rb1Conn2 = nil
-local rb1Task1 = nil
-local rb1OldStartShooting = nil
-local rb1CurrentTarget = nil
+rb1Target = nil
+rb1Desync = false
+rb1Conn1 = nil
+rb1Conn2 = nil
+rb1Task1 = nil
+rb1OldStartShooting = nil
+rb1CurrentTarget = nil
 
 -- Rage Bot 2 Variables
-local rb2Connection = nil
-local rb2MinStuds = 0
-local rb2MaxStuds = 100000
-local rb2Mode = "UnderBottom"
-local lastTargetHrp = nil
+rb2Connection = nil
+rb2MinStuds = 0
+rb2MaxStuds = 100000
+rb2Mode = "UnderBottom"
+lastTargetHrp = nil
 
 -- Rage Bot 3 Variables
-local rb3Connection = nil
-local rb3Distance = 100000
+rb3Connection = nil
+rb3Distance = 100000
 
 -- Full Auto Variables
 local faTargetPlayer, faGravityConnection, faSpinConnection, faCameraConnection, faAutoClickConnection
@@ -136,8 +146,8 @@ local originalData = {}
 
 -- Player Movement & Third Person Variables
 local flyEnabled, flySpeed = false, 50
-local WALK_SPEED = 16
-local walkSpeedConnection = nil
+WALK_SPEED = 16
+walkSpeedConnection = nil
 local bv, bg
 local noclipEnabled, infJumpEnabled = false, false
 local noclipConnection, thirdPersonWheelConnection
@@ -145,12 +155,12 @@ local distance, heightOffset, sideOffset = 12, 2.5, 0
 local MIN_DISTANCE, MAX_DISTANCE, ZOOM_SPEED = 3, 30, 1.5
 
 -- Visual & Animation Variables
-local meshWrappingActive = false
-local meshRenderConnection = nil
-local isSpinning = false
-local rotationSpeed = 20
-local angle = 0
-local originalC0s = {}
+meshWrappingActive = false
+meshRenderConnection = nil
+isSpinning = false
+rotationSpeed = 20
+angle = 0
+originalC0s = {}
 
 -- Helper: UI MainFrame 참조
 local MainFrame = { Visible = false }
@@ -428,6 +438,7 @@ local function updateKeybindsList()
     end
     if envConfig.timeOfDay == "Night" then table.insert(activeFeatures, "Night Mode [Pad4]") end
     if HIT_INDICATOR_ENABLED then table.insert(activeFeatures, "Hit Indicator") end
+    if ESP_ENABLED then table.insert(activeFeatures, "ESP") end
     if getgenv().InstanceUndergroundEnabled then table.insert(activeFeatures, "Anti-Void") end
     if _G.Features and _G.Features.DeviceSpoof and _G.Features.DeviceSpoof.Enabled then table.insert(activeFeatures, "Device Spoof (" .. tostring(_G.Features.DeviceSpoof.CurrentDevice) .. ")") end
     do
@@ -588,6 +599,54 @@ function Library:CreateColumn(colName)
     table.insert(Library.ColumnList, ColumnFrame)
 
     local Column = {}
+
+    
+    function Column:AddBox(opt)
+        local text = opt.Name or "Box"
+        local default = tostring(opt.Default or "")
+        local callback = opt.Callback or function() end
+        local value = default
+
+        local BoxFrame = Instance.new("Frame")
+        BoxFrame.Size = UDim2.new(1, -8, 0, 40)
+        BoxFrame.BackgroundTransparency = 1
+        BoxFrame.Parent = ItemList
+
+        local Label = Instance.new("TextLabel")
+        Label.Size = UDim2.new(1, 0, 0, 14)
+        Label.BackgroundTransparency = 1
+        Label.Text = text
+        Label.TextColor3 = Color3.fromRGB(180, 180, 190)
+        Label.Font = Enum.Font.Gotham
+        Label.TextSize = 10
+        Label.TextXAlignment = Enum.TextXAlignment.Left
+        Label.Parent = BoxFrame
+
+        local Box = Instance.new("TextBox")
+        Box.Size = UDim2.new(1, 0, 0, 22)
+        Box.Position = UDim2.new(0, 0, 0, 16)
+        Box.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+        Box.BorderSizePixel = 0
+        Box.Text = default
+        Box.TextColor3 = Color3.fromRGB(230, 230, 240)
+        Box.Font = Enum.Font.Gotham
+        Box.TextSize = 12
+        Box.ClearTextOnFocus = false
+        Box.Parent = BoxFrame
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 4)
+        corner.Parent = Box
+
+        Box.FocusLost:Connect(function()
+            value = Box.Text
+            callback(value)
+        end)
+        ConfigSystem.UIElements[text] = function(v)
+            Box.Text = tostring(v)
+            callback(v)
+        end
+    end
 
     function Column:AddButton(text, callback)
         local callback = callback or function() end
@@ -2513,6 +2572,8 @@ local antiaim = {
     end
 }
 
+Toggles = rawget(_G, "Toggles") or {}
+Options = rawget(_G, "Options") or {}
 local function updantiaim(deltatime)
     if not settings.enabled then return end
     if getgenv().InstanceConfigLoading then return end
@@ -2714,7 +2775,8 @@ end)
 -- UI BINDINGS & COLUMNS SETUP
 -- ============================================
 
-local MainCol = Library:CreateColumn("메인탭")
+function buildHubUI()
+MainCol = Library:CreateColumn("메인탭")
 
 MainCol:AddSwitch({
     Name = "Silent Aim (사이런트 에임)",
@@ -3012,7 +3074,7 @@ MainCol:AddSlider({
     end
 })
 
-local PlayerCol = Library:CreateColumn("플레이어탭")
+PlayerCol = Library:CreateColumn("플레이어탭")
 
 PlayerCol:AddSlider({
     Name = "Walk Speed (걷기 속도)",
@@ -3079,7 +3141,53 @@ PlayerCol:AddSwitch({
     end
 })
 
-local VisualCol = Library:CreateColumn("비주얼탭")
+PlayerCol:AddSwitch({
+    Name = "Anti Flashbang (플래시 무효)",
+    Default = true,
+    Callback = function(Value)
+        if Value then
+            enableAntiFlashbang()
+            createNotification("Anti Flashbang ON")
+        else
+            createNotification("Anti Flashbang OFF (재접속 시 원상복구)")
+        end
+    end
+})
+
+VisualCol = Library:CreateColumn("비주얼탭")
+
+VisualCol:AddSwitch({
+    Name = "ESP (전체)",
+    Default = false,
+    Callback = function(Value)
+        ESP_ENABLED = Value
+        if Value then startEsp() else stopEsp() end
+        createNotification(Value and "ESP ON" or "ESP OFF")
+        updateKeybindsList()
+    end
+})
+VisualCol:AddSwitch({
+    Name = "ESP Box (박스)",
+    Default = true,
+    Callback = function(Value)
+        ESP_BOX = Value
+    end
+})
+VisualCol:AddSwitch({
+    Name = "ESP Info (닉/체력/거리)",
+    Default = true,
+    Callback = function(Value)
+        ESP_INFO = Value
+    end
+})
+VisualCol:AddSwitch({
+    Name = "ESP Weapon (무기)",
+    Default = true,
+    Callback = function(Value)
+        ESP_WEAPON = Value
+    end
+})
+
 
 VisualCol:AddSwitch({
     Name = "키바인드 표시 (HUD)",
@@ -3132,7 +3240,40 @@ VisualCol:AddButton("Mesh Wrapping (메시 래핑)", function()
     end
 end)
 
-local AnimMatchCol = Library:CreateColumn("애니 / 매치탭")
+AnimMatchCol = Library:CreateColumn("애니 / 매치탭")
+
+AnimMatchCol:AddSwitch({
+    Name = "Custom Animation (커스텀 애니)",
+    Default = false,
+    Callback = function(Value)
+        if Value then
+            local ok = playAnimById(ANIM_ID)
+            createNotification(ok and ("Anim ON: " .. ANIM_ID) or "Anim load failed")
+        else
+            pcall(function() if animTrack then animTrack:Stop() end end)
+            createNotification("Anim OFF")
+        end
+    end
+})
+AnimMatchCol:AddBox({
+    Name = "Animation ID",
+    Default = "102820461604639",
+    Callback = function(Value)
+        local id = tostring(Value or ""):gsub("%D", "")
+        if id == "" then id = "102820461604639" end
+        ANIM_ID = id
+        createNotification("Anim ID: " .. id)
+    end
+})
+AnimMatchCol:AddButton("Play Animation", function()
+    local ok = playAnimById(ANIM_ID)
+    createNotification(ok and ("Playing " .. ANIM_ID) or "Failed to play anim")
+end)
+AnimMatchCol:AddButton("Stop Animation", function()
+    pcall(function() if animTrack then animTrack:Stop() animTrack = nil end end)
+    createNotification("Animation stopped")
+end)
+
 
 AnimMatchCol:AddSwitch({
     Name = "Spin Animation (스핀 애니)",
@@ -3171,7 +3312,7 @@ AnimMatchCol:AddDropdown({
     end
 })
 
-local EnvCol = Library:CreateColumn("환경탭")
+EnvCol = Library:CreateColumn("환경탭")
 
 EnvCol:AddSwitch({
     Name = "전체 쉐이더 (All Shaders)",
@@ -3229,7 +3370,7 @@ EnvCol:AddDropdown({
     end
 })
 
-local ConfigCol = Library:CreateColumn("설정탭")
+ConfigCol = Library:CreateColumn("설정탭")
 
 ConfigCol:AddButton("설정 저장 (Save Config)", function()
     local success = ConfigSystem:Save("default.json")
@@ -3260,6 +3401,244 @@ end)
 -- ============================================================
 -- LUNARA FEATURES MODULE (separate function = fresh local limit)
 -- ============================================================
+
+-- ============================================================
+
+end
+
+pcall(buildHubUI)
+
+-- Anti Flashbang
+function enableAntiFlashbang()
+    pcall(function()
+        local Flashed = require(LocalPlayer.PlayerScripts.Modules.ClientReplicatedClasses.ClientFighter.FighterInterface.Flashed)
+        if Flashed and Flashed.Flash then
+            Flashed.Flash = function() return end
+        end
+    end)
+end
+task.spawn(function()
+    for _ = 1, 15 do
+        enableAntiFlashbang()
+        task.wait(1)
+    end
+end)
+LocalPlayer.CharacterAdded:Connect(function()
+    task.delay(1, enableAntiFlashbang)
+end)
+
+-- ESP / TRACERS / ANIMATION
+-- ============================================================
+function clearEspDrawings()
+    for _, pack in pairs(espDrawings) do
+        if type(pack) == "table" then
+            for _, d in pairs(pack) do
+                pcall(function()
+                    if d and d.Remove then d:Remove() elseif d and d.Destroy then d:Destroy() end
+                end)
+            end
+        end
+    end
+    espDrawings = {}
+end
+
+function getEnemyWeaponName(player)
+    local weaponName = "None"
+    pcall(function()
+        local vmFolder = workspace:FindFirstChild("ViewModels")
+        if not vmFolder then return end
+        for _, viewmodel in pairs(vmFolder:GetChildren()) do
+            local parts = string.split(viewmodel.Name, " - ")
+            if #parts >= 3 then
+                local playerName = parts[1]
+                local gunName = parts[2]
+                if playerName == player.Name then
+                    weaponName = gunName
+                    break
+                end
+            end
+        end
+    end)
+    return weaponName
+end
+
+function makeText()
+    local t = Drawing.new("Text")
+    t.Size = 14
+    t.Center = true
+    t.Outline = true
+    t.Color = Color3.fromRGB(255, 255, 255)
+    t.Visible = false
+    return t
+end
+
+function makeLine()
+    local l = Drawing.new("Line")
+    l.Thickness = 1
+    l.Color = Color3.fromRGB(0, 255, 140)
+    l.Visible = false
+    return l
+end
+
+function ensureEspPack(player)
+    if espDrawings[player] then return espDrawings[player] end
+    local pack = {
+        -- box 4 lines
+        t = makeLine(), b = makeLine(), l = makeLine(), r = makeLine(),
+        info = makeText(),
+        weapon = makeText(),
+    }
+    espDrawings[player] = pack
+    return pack
+end
+
+function worldToScreen(pos)
+    local v, on = Camera:WorldToViewportPoint(pos)
+    return Vector2.new(v.X, v.Y), on, v.Z
+end
+
+function updateEsp()
+    if not ESP_ENABLED then
+        clearEspDrawings()
+        return
+    end
+    local myChar = LocalPlayer.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local seen = {}
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local char = player.Character
+        if not char then continue end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local root = char:FindFirstChild("HumanoidRootPart")
+        local head = char:FindFirstChild("Head")
+        if not hum or not root or hum.Health <= 0 then continue end
+
+        -- team skip if same TeamID
+        local skip = false
+        pcall(function()
+            local a, b = LocalPlayer:GetAttribute("TeamID"), player:GetAttribute("TeamID")
+            if a and b and a == b then skip = true end
+        end)
+        if skip then continue end
+
+        seen[player] = true
+        local pack = ensureEspPack(player)
+
+        local topPos = (head and head.Position or root.Position) + Vector3.new(0, 0.9, 0)
+        local botPos = root.Position - Vector3.new(0, 2.5, 0)
+        local top2d, on1, z1 = worldToScreen(topPos)
+        local bot2d, on2, z2 = worldToScreen(botPos)
+        if not on1 or not on2 or z1 < 0 then
+            pack.t.Visible = false; pack.b.Visible = false; pack.l.Visible = false; pack.r.Visible = false
+            pack.info.Visible = false; pack.weapon.Visible = false
+            continue
+        end
+
+        local h = math.abs(top2d.Y - bot2d.Y)
+        local w = h * 0.55
+        local cx = (top2d.X + bot2d.X) / 2
+        local topY, botY = top2d.Y, bot2d.Y
+        local left, right = cx - w / 2, cx + w / 2
+
+        if ESP_BOX then
+            pack.t.From = Vector2.new(left, topY); pack.t.To = Vector2.new(right, topY); pack.t.Visible = true
+            pack.b.From = Vector2.new(left, botY); pack.b.To = Vector2.new(right, botY); pack.b.Visible = true
+            pack.l.From = Vector2.new(left, topY); pack.l.To = Vector2.new(left, botY); pack.l.Visible = true
+            pack.r.From = Vector2.new(right, topY); pack.r.To = Vector2.new(right, botY); pack.r.Visible = true
+        else
+            pack.t.Visible = false; pack.b.Visible = false; pack.l.Visible = false; pack.r.Visible = false
+        end
+
+        local dist = myRoot and (myRoot.Position - root.Position).Magnitude or 0
+        local hp = math.floor(hum.Health + 0.5)
+        local maxhp = math.max(1, math.floor(hum.MaxHealth + 0.5))
+
+        if ESP_INFO then
+            pack.info.Text = string.format("%s | %d/%d HP | %dm", player.Name, hp, maxhp, math.floor(dist))
+            pack.info.Position = Vector2.new(cx, topY - 16)
+            pack.info.Color = Color3.fromRGB(255, 255, 255)
+            pack.info.Visible = true
+        else
+            pack.info.Visible = false
+        end
+
+        if ESP_WEAPON then
+            local wname = getEnemyWeaponName(player)
+            pack.weapon.Text = "[" .. tostring(wname) .. "]"
+            pack.weapon.Position = Vector2.new(cx, botY + 4)
+            pack.weapon.Color = Color3.fromRGB(120, 200, 255)
+            pack.weapon.Visible = true
+        else
+            pack.weapon.Visible = false
+        end
+    end
+
+    for plr, pack in pairs(espDrawings) do
+        if not seen[plr] then
+            for _, d in pairs(pack) do
+                pcall(function() if d.Remove then d:Remove() end end)
+            end
+            espDrawings[plr] = nil
+        end
+    end
+end
+
+function startEsp()
+    if espConnection then espConnection:Disconnect() end
+    espConnection = RunService.RenderStepped:Connect(function()
+        pcall(updateEsp)
+    end)
+end
+
+function stopEsp()
+    ESP_ENABLED = false
+    if espConnection then espConnection:Disconnect() espConnection = nil end
+    clearEspDrawings()
+end
+
+-- Animation (default Solar System catalog id)
+function playAnimById(id)
+    id = tostring(id or ""):gsub("%D", "")
+    if id == "" then id = "102820461604639" end
+    ANIM_ID = id
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+    local animator = hum:FindFirstChildOfClass("Animator")
+    if not animator then
+        animator = Instance.new("Animator")
+        animator.Parent = hum
+    end
+    pcall(function()
+        if animTrack then animTrack:Stop() animTrack = nil end
+    end)
+    local ok, track = pcall(function()
+        local anim = Instance.new("Animation")
+        anim.AnimationId = "rbxassetid://" .. id
+        local t = animator:LoadAnimation(anim)
+        t.Priority = Enum.AnimationPriority.Action
+        t.Looped = true
+        t:Play()
+        return t
+    end)
+    if ok and track then
+        animTrack = track
+        return true
+    end
+    return false
+end
+
+LocalPlayer.CharacterAdded:Connect(function()
+    task.delay(1, function()
+        if ANIM_ID and ANIM_ID ~= "" then
+            pcall(playAnimById, ANIM_ID)
+        end
+    end)
+end)
+
 function initLunaraExtras()
     local config = rawget(_G, "LunaraConfig") or {
         voidspam = {
@@ -3561,5 +3940,6 @@ pcall(function()
 end)
 
 pcall(function() applyWalkSpeed(16) startWalkSpeedLoop() end)
-ToggleUI(true)
-createNotification("mineminyee Hub + Lunara Successfully Loaded!")
+pcall(function() enableAntiFlashbang() end)
+pcall(function() ToggleUI(true) end)
+pcall(createNotification, "mineminyee Hub + Lunara Successfully Loaded!")

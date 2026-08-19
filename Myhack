@@ -1,4 +1,3 @@
-
 -- ============================================================
 -- Anti-Cheat Bypass (extracted from Lunara)
 -- ============================================================
@@ -75,6 +74,7 @@ local rb2Enabled = false
 local rb3Enabled = false
 local rb3DesyncEnabled = false
 local FULL_AUTO_ENABLED = false
+local AUTO_FIRE_ENABLED = false
 local AUTO_MATCH_ENABLED = false
 local AUTO_MATCH_MODE = "1v1"
 local HUD_DISPLAY_ENABLED = true
@@ -136,6 +136,8 @@ local originalData = {}
 
 -- Player Movement & Third Person Variables
 local flyEnabled, flySpeed = false, 50
+local WALK_SPEED = 16
+local walkSpeedConnection = nil
 local bv, bg
 local noclipEnabled, infJumpEnabled = false, false
 local noclipConnection, thirdPersonWheelConnection
@@ -403,7 +405,9 @@ local function updateKeybindsList()
     if rb3Enabled then table.insert(activeFeatures, "Rage Bot 3 (Lunara)") end
     if rb3DesyncEnabled then table.insert(activeFeatures, "RB3 Desync") end
     if FULL_AUTO_ENABLED then table.insert(activeFeatures, "Full Auto") end
+    if AUTO_FIRE_ENABLED then table.insert(activeFeatures, "Auto Fire") end
     
+    if WALK_SPEED and WALK_SPEED ~= 16 then table.insert(activeFeatures, "WalkSpeed (" .. tostring(WALK_SPEED) .. ")") end
     if flyEnabled then table.insert(activeFeatures, "Fly (" .. flySpeed .. ")") end
     if noclipEnabled then table.insert(activeFeatures, "Noclip") end
     if infJumpEnabled then table.insert(activeFeatures, "Infinite Jump") end
@@ -1361,6 +1365,7 @@ local function getDesyncTarget()
 end
 
 local function startStandaloneDesync()
+    -- main.lua style: server under target (-5), client restore
     stopStandaloneDesync()
     
     desyncConnection = RunService.Heartbeat:Connect(function()
@@ -1368,7 +1373,6 @@ local function startStandaloneDesync()
         local myChar = LocalPlayer.Character
         local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
         local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
-        
         if not myRoot or not myHum or myHum.Health <= 0 then return end
         
         local target = getDesyncTarget()
@@ -1376,16 +1380,20 @@ local function startStandaloneDesync()
         if not targetRoot then return end
         
         local originalCFrame = myRoot.CFrame
-        local originalVelocity = myRoot.Velocity
-        local originalRotVelocity = myRoot.RotVelocity
+        local walkVel = myRoot.AssemblyLinearVelocity
         
         myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -5, 0)
         
-        RunService:BindToRenderStep("Restore_Standalone_Desync", 101, function()
+        RunService:BindToRenderStep("Restore_Standalone_Desync", Enum.RenderPriority.Camera.Value + 1, function()
             if myRoot and myRoot.Parent then
                 myRoot.CFrame = originalCFrame
-                myRoot.Velocity = originalVelocity
-                myRoot.RotVelocity = originalRotVelocity
+                local md = myHum.MoveDirection
+                local spd = myHum.WalkSpeed or WALK_SPEED or 16
+                if md.Magnitude > 0.05 then
+                    myRoot.AssemblyLinearVelocity = Vector3.new(md.X * spd, walkVel.Y, md.Z * spd)
+                else
+                    myRoot.AssemblyLinearVelocity = walkVel
+                end
             end
             pcall(function() RunService:UnbindFromRenderStep("Restore_Standalone_Desync") end)
         end)
@@ -1780,8 +1788,10 @@ function startRageBot3()
                 end
                 pcall(function() RunService:UnbindFromRenderStep("Restore_RB3") end)
             end)
-            -- shoot from desync (under) position toward head
-            rb3TryShoot(targetEnemy.Character, targetHrp.Position + Vector3.new(0, -5, 0))
+            -- shoot only when Auto Fire toggle is ON
+            if AUTO_FIRE_ENABLED then
+                rb3TryShoot(targetEnemy.Character, targetHrp.Position + Vector3.new(0, -5, 0))
+            end
             return
         end
 
@@ -1789,17 +1799,21 @@ function startRageBot3()
             -- voidspam handles snap; only shoot from slightly under real pos
             local shootFrom = (vs and visualCF and visualCF.Position) or hrp.Position
             shootFrom = Vector3.new(shootFrom.X, shootFrom.Y - 500, shootFrom.Z)
-            rb3TryShoot(targetEnemy.Character, shootFrom)
+            if AUTO_FIRE_ENABLED then
+                rb3TryShoot(targetEnemy.Character, shootFrom)
+            end
             return
         end
 
-        -- TELEPORT TO ENEMY then shoot
+        -- TELEPORT TO ENEMY (position only; shoot only if Auto Fire ON)
         pcall(function()
             hrp.CFrame = CFrame.new(atkPos, targetHead.Position)
             hrp.AssemblyLinearVelocity = Vector3.zero
             hrp.AssemblyAngularVelocity = Vector3.zero
         end)
-        rb3TryShoot(targetEnemy.Character, atkPos)
+        if AUTO_FIRE_ENABLED then
+            rb3TryShoot(targetEnemy.Character, atkPos)
+        end
     end)
 end
 
@@ -2089,6 +2103,60 @@ local function stopFlying()
     if bv then bv:Destroy() bv = nil end
     if bg then bg:Destroy() bg = nil end
 end
+
+
+local function applyWalkSpeed(val)
+    local n = tonumber(val)
+    if type(val) == "table" then n = tonumber(val[1] or val.Value) end
+    if not n then n = 16 end
+    WALK_SPEED = math.clamp(n, 1, 500)
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function()
+            hum.WalkSpeed = WALK_SPEED
+        end)
+    end
+end
+
+local function forceWalkSpeed()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    -- force every frame (game often resets WalkSpeed)
+    pcall(function()
+        if hum.WalkSpeed ~= WALK_SPEED then
+            hum.WalkSpeed = WALK_SPEED
+        end
+    end)
+end
+
+local function startWalkSpeedLoop()
+    if walkSpeedConnection then
+        pcall(function() walkSpeedConnection:Disconnect() end)
+        walkSpeedConnection = nil
+    end
+    pcall(function() RunService:UnbindFromRenderStep("ms_walkspeed") end)
+    -- Heartbeat + RenderStep (high priority) so game scripts cannot keep old speed
+    walkSpeedConnection = RunService.Heartbeat:Connect(forceWalkSpeed)
+    pcall(function()
+        RunService:BindToRenderStep("ms_walkspeed", Enum.RenderPriority.Character.Value + 50, forceWalkSpeed)
+    end)
+    forceWalkSpeed()
+end
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+    task.spawn(function()
+        local hum = char:WaitForChild("Humanoid", 8)
+        if not hum then return end
+        for _ = 1, 20 do
+            pcall(function() hum.WalkSpeed = WALK_SPEED end)
+            task.wait(0.1)
+        end
+        startWalkSpeedLoop()
+    end)
+end)
 
 local function startFlying()
     stopFlying()
@@ -2766,6 +2834,16 @@ MainCol:AddSwitch({
     end
 })
 
+MainCol:AddSwitch({
+    Name = "Auto Fire (자동 발사)",
+    Default = false,
+    Callback = function(Value)
+        AUTO_FIRE_ENABLED = Value
+        createNotification(Value and "Auto Fire ON (RB3 자동사격)" or "Auto Fire OFF")
+        updateKeybindsList()
+    end
+})
+
 -- ===== Lunara feature toggles (메인탭에서도 ON/OFF) =====
 MainCol:AddSwitch({
     Name = "Void Spam (보이드 스팸)",
@@ -2911,6 +2989,20 @@ MainCol:AddSlider({
 })
 
 local PlayerCol = Library:CreateColumn("플레이어탭")
+
+PlayerCol:AddSlider({
+    Name = "Walk Speed (걷기 속도)",
+    Min = 1,
+    Max = 200,
+    Default = 16,
+    Suffix = " Speed",
+    Callback = function(Value)
+        applyWalkSpeed(Value)
+        startWalkSpeedLoop()
+        forceWalkSpeed()
+        createNotification("Walk Speed: " .. tostring(math.floor(WALK_SPEED)))
+    end
+})
 
 PlayerCol:AddSwitch({
     Name = "Fly (비행)",
@@ -3442,5 +3534,6 @@ pcall(function()
     initLunaraExtras()
 end)
 
+pcall(function() applyWalkSpeed(16) startWalkSpeedLoop() end)
 ToggleUI(true)
 createNotification("mineminyee Hub + Lunara Successfully Loaded!")

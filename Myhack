@@ -76,6 +76,19 @@ rb3DesyncEnabled = false
 FULL_AUTO_ENABLED = false
 AUTO_FIRE_ENABLED = false
 AUTO_MATCH_ENABLED = false
+AUTO_BAN_ENABLED = false
+AUTO_BAN_W1 = "Riot Shield"
+AUTO_BAN_W2 = "Katana"
+AUTO_QUEUE_RANKED = false
+HIT_SOUND_ENABLED = false
+HIT_SOUND_STYLE = "Rust HS"
+HIT_SOUND_VOLUME = 0.5
+HIT_SOUND_PITCH = 1.0
+SLIDE_BOOST_ENABLED = false
+AUTO_COLLECT_HEALTH = true
+AUTO_COLLECT_AMMO = true
+SLIDE_BOOST_MULT = 1.5
+
 AUTO_MATCH_MODE = "1v1"
 HUD_DISPLAY_ENABLED = true
 DESYNC_ENABLED = false
@@ -102,10 +115,16 @@ oldNamecall = nil
 
 -- Standalone Desync Variables
 desyncConnection = nil
+desyncVisual = { cf = nil }
 
 -- Rage Bot 1 Variables
 rb1Target = nil
 rb1Desync = false
+rb1DesyncEnabled = false
+rb2DesyncEnabled = false
+RAGE_DESYNC_ENABLED = false
+flySavedCF = nil
+flyCsyncEnabled = false
 rb1Conn1 = nil
 rb1Conn2 = nil
 rb1Task1 = nil
@@ -115,7 +134,7 @@ rb1CurrentTarget = nil
 -- Rage Bot 2 Variables
 rb2Connection = nil
 rb2MinStuds = 0
-rb2MaxStuds = 100000
+rb2MaxStuds = math.huge
 rb2Mode = "UnderBottom"
 lastTargetHrp = nil
 
@@ -409,11 +428,12 @@ local function updateKeybindsList()
     
     if SILENT_AIM_ENABLED then table.insert(activeFeatures, "Silent Aim") end
     if NO_RECOIL_ENABLED then table.insert(activeFeatures, "No Recoil") end
-    if DESYNC_ENABLED then table.insert(activeFeatures, "Desync Standalone") end
+    if DESYNC_ENABLED then table.insert(activeFeatures, "Ragebot 0 / 주먹") end
     if rbEnabled then table.insert(activeFeatures, "Rage Bot 1") end
     if rb2Enabled then table.insert(activeFeatures, "Rage Bot 2") end
     if rb3Enabled then table.insert(activeFeatures, "Rage Bot 3 (Lunara)") end
-    if rb3DesyncEnabled then table.insert(activeFeatures, "RB3 Desync") end
+    if rb1DesyncEnabled and rbEnabled then table.insert(activeFeatures, "RB1 Desync") end
+    if rb3DesyncEnabled and rb3Enabled then table.insert(activeFeatures, "RB3 Desync") end
     if FULL_AUTO_ENABLED then table.insert(activeFeatures, "Full Auto") end
     if AUTO_FIRE_ENABLED then table.insert(activeFeatures, "Auto Fire") end
     
@@ -424,7 +444,10 @@ local function updateKeybindsList()
     if THIRD_PERSON_ENABLED then table.insert(activeFeatures, "Third Person") end
     
     if isSpinning then table.insert(activeFeatures, "Spin Anim") end
-    if AUTO_MATCH_ENABLED then table.insert(activeFeatures, "Auto Match (" .. AUTO_MATCH_MODE .. ")") end
+    if AUTO_MATCH_ENABLED then table.insert(activeFeatures, "Auto Match (" .. AUTO_MATCH_MODE .. (AUTO_QUEUE_RANKED and " Ranked" or "") .. ")") end
+    if AUTO_BAN_ENABLED then table.insert(activeFeatures, "Auto Ban") end
+    if HIT_SOUND_ENABLED then table.insert(activeFeatures, "Hit Sound") end
+    if SLIDE_BOOST_ENABLED then table.insert(activeFeatures, "Slide x" .. tostring(SLIDE_BOOST_MULT or 1.5)) end
     
     if meshWrappingActive then table.insert(activeFeatures, "Mesh Wrapping") end
     if envConfig.shaderEnabled then table.insert(activeFeatures, "All Shaders [Pad1]") end
@@ -1398,6 +1421,7 @@ local function stopStandaloneDesync()
         desyncConnection = nil
     end
     pcall(function() RunService:UnbindFromRenderStep("Restore_Standalone_Desync") end)
+    desyncVisual = { cf = nil }
 end
 
 local function getDesyncTarget()
@@ -1424,37 +1448,63 @@ local function getDesyncTarget()
 end
 
 local function startStandaloneDesync()
-    -- main.lua style: server under target (-5), client restore
+    -- Continuous client hold (never show under-foot TP)
     stopStandaloneDesync()
-    
-    desyncConnection = RunService.Heartbeat:Connect(function()
+    desyncVisual = desyncVisual or { cf = nil }
+    desyncVisual.cf = nil
+
+    -- ALWAYS restore visual BEFORE camera renders (do not unbind each frame)
+    pcall(function()
+        RunService:BindToRenderStep("Restore_Standalone_Desync", Enum.RenderPriority.Camera.Value - 1, function()
+            if not DESYNC_ENABLED then return end
+            local myChar = LocalPlayer.Character
+            local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+            if not myRoot or not myHum or not desyncVisual.cf then return end
+            myRoot.CFrame = desyncVisual.cf
+            local md = myHum.MoveDirection
+            local spd = (WALK_SPEED and WALK_SPEED > 0) and WALK_SPEED or (myHum.WalkSpeed or 16)
+            local y = myRoot.AssemblyLinearVelocity.Y
+            if md.Magnitude > 0.05 then
+                myRoot.AssemblyLinearVelocity = Vector3.new(md.X * spd, y, md.Z * spd)
+            else
+                myRoot.AssemblyLinearVelocity = Vector3.new(0, y, 0)
+            end
+        end)
+    end)
+
+    desyncConnection = RunService.Heartbeat:Connect(function(dt)
         if not DESYNC_ENABLED then return end
+        if flyEnabled then return end
         local myChar = LocalPlayer.Character
         local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
         local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
         if not myRoot or not myHum or myHum.Health <= 0 then return end
-        
+
         local target = getDesyncTarget()
         local targetRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-        if not targetRoot then return end
-        
-        local originalCFrame = myRoot.CFrame
-        local walkVel = myRoot.AssemblyLinearVelocity
-        
-        myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -5, 0)
-        
-        RunService:BindToRenderStep("Restore_Standalone_Desync", Enum.RenderPriority.Camera.Value + 1, function()
-            if myRoot and myRoot.Parent then
-                myRoot.CFrame = originalCFrame
-                local md = myHum.MoveDirection
-                local spd = myHum.WalkSpeed or WALK_SPEED or 16
-                if md.Magnitude > 0.05 then
-                    myRoot.AssemblyLinearVelocity = Vector3.new(md.X * spd, walkVel.Y, md.Z * spd)
-                else
-                    myRoot.AssemblyLinearVelocity = walkVel
-                end
+        local thum = target and target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+        -- lobby / wait: no target -> do not touch CFrame at all
+        if not targetRoot or not thum or thum.Health <= 0 then
+            desyncVisual.cf = nil
+            return
+        end
+
+        if not desyncVisual.cf then
+            desyncVisual.cf = myRoot.CFrame
+        else
+            local md = myHum.MoveDirection
+            local spd = (WALK_SPEED and WALK_SPEED > 0) and WALK_SPEED or (myHum.WalkSpeed or 16)
+            dt = typeof(dt) == "number" and dt or 1/60
+            if md.Magnitude > 0.05 then
+                local pos = desyncVisual.cf.Position + Vector3.new(md.X, 0, md.Z).Unit * spd * dt
+                local look = desyncVisual.cf.LookVector
+                desyncVisual.cf = CFrame.new(pos, pos + Vector3.new(look.X, 0, look.Z))
             end
-            pcall(function() RunService:UnbindFromRenderStep("Restore_Standalone_Desync") end)
+        end
+
+        pcall(function()
+            myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -5, 0)
         end)
     end)
 end
@@ -1495,9 +1545,12 @@ local function rb1FindTarget()
     return closest
 end
 
+
+
 local function rb1StopDesync()
     rb1Desync = false
     rb1CurrentTarget = nil
+    rb1VisualCF = nil
     if rb1Conn2 then
         rb1Conn2:Disconnect()
         rb1Conn2 = nil
@@ -1505,42 +1558,65 @@ local function rb1StopDesync()
     pcall(function() RunService:UnbindFromRenderStep("Restore_RB1") end)
 end
 
+-- RB1 native desync (base for all): server under target, client RenderStep holds visual
+local rb1VisualCF = nil
 local function rb1StartDesync(target)
     if rb1Conn2 then rb1Conn2:Disconnect() end
     rb1Desync = true
     rb1CurrentTarget = target
-    
-    rb1Conn2 = RunService.Heartbeat:Connect(function()
-        if not rb1Desync or not rbEnabled then return end
+    rb1VisualCF = nil
+
+    pcall(function() RunService:UnbindFromRenderStep("Restore_RB1") end)
+    pcall(function()
+        RunService:BindToRenderStep("Restore_RB1", Enum.RenderPriority.Camera.Value - 1, function()
+            if not rb1DesyncEnabled or not rb1Desync or not rb1VisualCF or not rbEnabled then return end
+            local myChar = LocalPlayer.Character
+            local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+            local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+            if not myRoot or not myHum then return end
+            myRoot.CFrame = rb1VisualCF
+            local md = myHum.MoveDirection
+            local spd = (WALK_SPEED and WALK_SPEED > 0) and WALK_SPEED or (myHum.WalkSpeed or 16)
+            local y = myRoot.AssemblyLinearVelocity.Y
+            if md.Magnitude > 0.05 then
+                myRoot.AssemblyLinearVelocity = Vector3.new(md.X * spd, y, md.Z * spd)
+            else
+                myRoot.AssemblyLinearVelocity = Vector3.new(0, y, 0)
+            end
+        end)
+    end)
+
+    rb1Conn2 = RunService.Heartbeat:Connect(function(dt)
+        if not rb1Desync or not rbEnabled or not rb1DesyncEnabled then return end
+        if flyEnabled then return end
         local myChar = LocalPlayer.Character
         local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
         local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
         if not myRoot or not myHum or myHum.Health <= 0 then return end
-        
         local targetRoot = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-        if not targetRoot then
+        local thum = target and target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+        if not targetRoot or not thum or thum.Health <= 0 then
             rb1StopDesync()
             return
         end
-        
-        local originalCFrame = myRoot.CFrame
-        local originalVelocity = myRoot.Velocity
-        local originalRotVelocity = myRoot.RotVelocity
-        
-        myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -5, 0)
-        
-        RunService:BindToRenderStep("Restore_RB1", 101, function()
-            if myRoot and myRoot.Parent then
-                myRoot.CFrame = originalCFrame
-                myRoot.Velocity = originalVelocity
-                myRoot.RotVelocity = originalRotVelocity
+        if not rb1VisualCF then
+            rb1VisualCF = myRoot.CFrame
+        else
+            local md = myHum.MoveDirection
+            local spd = (WALK_SPEED and WALK_SPEED > 0) and WALK_SPEED or (myHum.WalkSpeed or 16)
+            dt = typeof(dt) == "number" and dt or 1/60
+            if md.Magnitude > 0.05 then
+                local pos = rb1VisualCF.Position + Vector3.new(md.X, 0, md.Z).Unit * spd * dt
+                local look = rb1VisualCF.LookVector
+                rb1VisualCF = CFrame.new(pos, pos + Vector3.new(look.X, 0, look.Z))
             end
-            pcall(function() RunService:UnbindFromRenderStep("Restore_RB1") end)
-        end)
+        end
+        myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, -5, 0)
     end)
 end
 
 local function startRageBot()
+
     rbEnabled = true
     if rb1Conn1 then rb1Conn1:Disconnect() end
     rb1Conn1 = RunService.Heartbeat:Connect(function()
@@ -1575,9 +1651,13 @@ local function startRageBot()
                     return unpack(results)
                 end
                 
-                if not rb1Desync or rb1CurrentTarget ~= target then
-                    rb1StartDesync(target)
-                    task.wait(0.1)
+                if rb1DesyncEnabled then
+                    if not rb1Desync or rb1CurrentTarget ~= target then
+                        rb1StartDesync(target)
+                        task.wait(0.1)
+                    end
+                elseif rb1Desync then
+                    rb1StopDesync()
                 end
                 
                 if rb1Task1 then
@@ -1643,12 +1723,12 @@ local function GetAbsoluteClosestEnemyRB2()
             if targetPart then
                 local dist = (targetPart.Position - referencePos).Magnitude
                 if useInitialRule then
-                    if dist >= rb2MinStuds and dist <= rb2MaxStuds and dist < shortestDist then
+                    if dist < shortestDist then
                         shortestDist = dist
                         closestPart = targetPart
                     end
                 else
-                    if dist <= rb2MaxStuds and dist < shortestDist then
+                    if dist < shortestDist then
                         shortestDist = dist
                         closestPart = targetPart
                     end
@@ -1664,7 +1744,7 @@ local function GetAbsoluteClosestEnemyRB2()
                 local targetPart = char:FindFirstChild("HumanoidRootPart")
                 if targetPart then
                     local dist = (targetPart.Position - myHrp.Position).Magnitude
-                    if dist <= rb2MaxStuds and dist < shortestDist then
+                    if dist < shortestDist then
                         shortestDist = dist
                         closestPart = targetPart
                     end
@@ -1679,49 +1759,63 @@ end
 
 local function startRageBot2()
     if rb2Connection then rb2Connection:Disconnect() end
+    pcall(function() RunService:UnbindFromRenderStep("Restore_RB2") end)
+
     rb2Connection = RunService.Heartbeat:Connect(function()
-        if not rb2Enabled then return end
-        local char = LocalPlayer.Character
-        if not char then return end
-        local myHrp = char:FindFirstChild("HumanoidRootPart")
-        local myHum = char:FindFirstChildOfClass("Humanoid")
-        local myHead = char:FindFirstChild("Head")
+        if not rb2Enabled or flyEnabled then return end
+        local character = LocalPlayer.Character
+        local hrp = character and character:FindFirstChild("HumanoidRootPart")
+        local hum = character and character:FindFirstChildOfClass("Humanoid")
+        if not hrp or not hum or hum.Health <= 0 then return end
 
-        if myHrp and myHum and myHum.Health > 0 then
-            local enemyHrp = GetAbsoluteClosestEnemyRB2()
-            if enemyHrp then
-                local enemyChar = enemyHrp.Parent
-                local enemyHead = enemyChar and enemyChar:FindFirstChild("Head")
-
-                if rb2Mode == "OverHead" then
-                    local randomX = math.random(-3, 3) / 10
-                    local randomZ = math.random(-3, 3) / 10
-                    local offset = Vector3.new(randomX, 4.5, randomZ)
-                    myHrp.CFrame = enemyHrp.CFrame + offset
-                elseif rb2Mode == "UnderBottom" then
-                    myHrp.CFrame = enemyHrp.CFrame * CFrame.new(0, -5, 0)
-                elseif rb2Mode == "Behind" and enemyHead then
-                    local behindCFrame = enemyHrp.CFrame * CFrame.new(0, 0, 2.5)
-                    if myHead then
-                        local headOffset = myHead.Position.Y - myHrp.Position.Y
-                        local targetY = enemyHead.Position.Y - headOffset
-                        local finalPos = Vector3.new(behindCFrame.Position.X, targetY, behindCFrame.Position.Z)
-                        myHrp.CFrame = CFrame.lookAt(finalPos, Vector3.new(enemyHrp.Position.X, finalPos.Y, enemyHrp.Position.Z))
-                    else
-                        myHrp.CFrame = behindCFrame
+        local best, bd = nil, math.huge
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and plr.Character then
+                local th = plr.Character:FindFirstChildOfClass("Humanoid")
+                local tr = plr.Character:FindFirstChild("HumanoidRootPart")
+                if th and th.Health > 0 and tr then
+                    local skip = false
+                    pcall(function()
+                        local a, b = LocalPlayer:GetAttribute("TeamID"), plr:GetAttribute("TeamID")
+                        if a and b and a == b then skip = true end
+                    end)
+                    if not skip then
+                        local d = (hrp.Position - tr.Position).Magnitude
+                        if d < bd then best, bd = plr, d end
                     end
                 end
             end
         end
+        if not best or not best.Character then return end
+        local thrp = best.Character:FindFirstChild("HumanoidRootPart")
+        local thead = best.Character:FindFirstChild("Head") or thrp
+        local thum = best.Character:FindFirstChildOfClass("Humanoid")
+        if not thrp or not thum or thum.Health <= 0 then return end
+
+        local mode = rb2Mode or "UnderBottom"
+        local atk
+        if mode == "OverHead" then
+            atk = thrp.Position + Vector3.new(0, 6, 0)
+        elseif mode == "Behind" then
+            atk = thrp.Position - thrp.CFrame.LookVector * 4
+        else
+            atk = thrp.Position + Vector3.new(0, -5, 0)
+        end
+        local aim = thead and thead.Position or thrp.Position
+        pcall(function() hrp.CFrame = CFrame.new(atk, aim) end)
     end)
 end
 
 local function stopRageBot2()
+
+
+
     if rb2Connection then
         rb2Connection:Disconnect()
         rb2Connection = nil
     end
     lastTargetHrp = nil
+    pcall(function() RunService:UnbindFromRenderStep("Restore_RB2") end)
 end
 
 -- RAGE BOT 3 LOGIC
@@ -1803,10 +1897,15 @@ function rb3TryShoot(targetChar, shootPos)
         local hitPart = targetChar:FindFirstChild("Head") or targetChar:FindFirstChild("HumanoidRootPart")
         if not hitPart then return end
         local targetPos = hitPart.Position
+        local origin = shootPos
+        if typeof(origin) ~= "Vector3" then
+            origin = targetPos + Vector3.new(0, 1.2, 0)
+        end
+        local aimCF = CFrame.new(origin, targetPos)
         local data = {
             [utf8.char(1)] = {
-                [utf8.char(0)] = utility:EncodeCFrame(CFrame.new(shootPos, targetPos)),
-                [utf8.char(1)] = utility:EncodeCFrame(CFrame.new(shootPos, targetPos)),
+                [utf8.char(0)] = utility:EncodeCFrame(aimCF),
+                [utf8.char(1)] = utility:EncodeCFrame(aimCF),
                 [utf8.char(2)] = hitPart,
                 [utf8.char(3)] = utility:EncodeCFrame(CFrame.new(0.43, 0.25, 0.42)),
             },
@@ -1820,76 +1919,92 @@ end
 function startRageBot3()
     if rb3Connection then rb3Connection:Disconnect() end
     rb3OrbitAngle = 0
+    local rb3VisualCF = nil
+
     pcall(function() RunService:UnbindFromRenderStep("Restore_RB3") end)
+    pcall(function()
+        RunService:BindToRenderStep("Restore_RB3", Enum.RenderPriority.Camera.Value - 1, function()
+            if not rb3DesyncEnabled or not rb3Enabled or not rb3VisualCF then return end
+            local c = LocalPlayer.Character
+            local r = c and c:FindFirstChild("HumanoidRootPart")
+            local h = c and c:FindFirstChildOfClass("Humanoid")
+            if not r or not h then return end
+            r.CFrame = rb3VisualCF
+            local md = h.MoveDirection
+            local spd = (WALK_SPEED and WALK_SPEED > 0) and WALK_SPEED or (h.WalkSpeed or 16)
+            local y = r.AssemblyLinearVelocity.Y
+            if md.Magnitude > 0.05 then
+                r.AssemblyLinearVelocity = Vector3.new(md.X * spd, y, md.Z * spd)
+            else
+                r.AssemblyLinearVelocity = Vector3.new(0, y, 0)
+            end
+        end)
+    end)
 
     rb3Connection = RunService.Heartbeat:Connect(function(dt)
         if not rb3Enabled then return end
+        if flyEnabled then return end
         local char = LocalPlayer.Character
-        if not char then return end
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        local hum = char:FindFirstChildOfClass("Humanoid")
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not hrp or not hum or hum.Health <= 0 then return end
 
-        local LE = getgenv().LunaraExtras
-        local vs = LE and LE.config and LE.config.voidspam
-        local voidOn = vs and vs.enabled
-        local voidHide = voidOn and vs.phase == "hide"
-
         local targetEnemy = getClosestEnemyRB3_Lunara()
-        if not targetEnemy or not targetEnemy.Character then return end
+        if not targetEnemy or not targetEnemy.Character then
+            rb3VisualCF = nil
+            return
+        end
+        local thum = targetEnemy.Character:FindFirstChildOfClass("Humanoid")
+        if not thum or thum.Health <= 0 then
+            rb3VisualCF = nil
+            return
+        end
         local targetHrp = targetEnemy.Character:FindFirstChild("HumanoidRootPart")
         local targetHead = targetEnemy.Character:FindFirstChild("Head") or targetHrp
-        if not targetHrp or not targetHead then return end
+        if not targetHrp or not targetHead then
+            rb3VisualCF = nil
+            return
+        end
 
         local atkPos = targetHrp.Position + Vector3.new(0, 2, 0)
-        local visualCF = hrp.CFrame
-        local visualVel = hrp.AssemblyLinearVelocity
+        local aimAt = targetHead.Position
 
-        -- RB1-style DESYNC: server under enemy, client keeps visual
         if rb3DesyncEnabled then
-            local originalCFrame = hrp.CFrame
-            local originalVelocity = hrp.AssemblyLinearVelocity
+            if not rb3VisualCF then
+                rb3VisualCF = hrp.CFrame
+            else
+                local md = hum.MoveDirection
+                local spd = (WALK_SPEED and WALK_SPEED > 0) and WALK_SPEED or (hum.WalkSpeed or 16)
+                dt = typeof(dt) == "number" and dt or 1/60
+                if md.Magnitude > 0.05 then
+                    local pos = rb3VisualCF.Position + Vector3.new(md.X, 0, md.Z).Unit * spd * dt
+                    local look = rb3VisualCF.LookVector
+                    rb3VisualCF = CFrame.new(pos, pos + Vector3.new(look.X, 0, look.Z))
+                end
+            end
+            pcall(function() hrp.CFrame = CFrame.new(atkPos, aimAt) end)
+            if AUTO_FIRE_ENABLED then
+                rb3TryShoot(targetEnemy.Character, atkPos)
+            end
+        elseif AUTO_FIRE_ENABLED then
+            rb3VisualCF = nil
             pcall(function()
-                hrp.CFrame = targetHrp.CFrame * CFrame.new(0, -5, 0)
+                hrp.CFrame = CFrame.new(atkPos, aimAt)
                 hrp.AssemblyLinearVelocity = Vector3.zero
             end)
-            RunService:BindToRenderStep("Restore_RB3", 101, function()
-                if hrp and hrp.Parent then
-                    hrp.CFrame = originalCFrame
-                    hrp.AssemblyLinearVelocity = originalVelocity
-                end
-                pcall(function() RunService:UnbindFromRenderStep("Restore_RB3") end)
-            end)
-            -- shoot only when Auto Fire toggle is ON
-            if AUTO_FIRE_ENABLED then
-                rb3TryShoot(targetEnemy.Character, targetHrp.Position + Vector3.new(0, -5, 0))
-            end
-            return
-        end
-
-        if voidHide then
-            -- voidspam handles snap; only shoot from slightly under real pos
-            local shootFrom = (vs and visualCF and visualCF.Position) or hrp.Position
-            shootFrom = Vector3.new(shootFrom.X, shootFrom.Y - 500, shootFrom.Z)
-            if AUTO_FIRE_ENABLED then
-                rb3TryShoot(targetEnemy.Character, shootFrom)
-            end
-            return
-        end
-
-        -- TELEPORT TO ENEMY (position only; shoot only if Auto Fire ON)
-        pcall(function()
-            hrp.CFrame = CFrame.new(atkPos, targetHead.Position)
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-        end)
-        if AUTO_FIRE_ENABLED then
             rb3TryShoot(targetEnemy.Character, atkPos)
+        else
+            rb3VisualCF = nil
         end
     end)
 end
 
 function stopRageBot3()
+
+
+
+
+
     if rb3Connection then
         rb3Connection:Disconnect()
         rb3Connection = nil
@@ -2170,10 +2285,27 @@ local function disableNoRecoil()
 end
 
 -- FLY, NOCLIP, THIRD PERSON LOGIC
+
+local function ensureCharacterCollision()
+    if flyEnabled or noclipEnabled then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" then
+            p.CanCollide = true
+        end
+    end
+end
+
 local function stopFlying()
     flyEnabled = false
-    if bv then bv:Destroy() bv = nil end
-    if bg then bg:Destroy() bg = nil end
+    flySavedCF = nil
+    getgenv().InstanceFlySavedCF = nil
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum.PlatformStand = false end) end
+    if bv then pcall(function() bv:Destroy() end) bv = nil end
+    if bg then pcall(function() bg:Destroy() end) bg = nil end
 end
 
 
@@ -2190,8 +2322,11 @@ function forceWalkSpeed()
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
+    local spd = tonumber(WALK_SPEED) or 16
     pcall(function()
-        hum.WalkSpeed = WALK_SPEED
+        if math.abs((hum.WalkSpeed or 0) - spd) > 0.01 then
+            hum.WalkSpeed = spd
+        end
     end)
 end
 
@@ -2244,45 +2379,50 @@ end)
 local function startFlying()
     stopFlying()
     flyEnabled = true
+    flySavedCF = nil
 
     task.spawn(function()
         while flyEnabled do
             local char = LocalPlayer.Character
             local hrp = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
-
             if hrp and hum and hum.Health > 0 then
-                if not bv or bv.Parent ~= hrp then
-                    bv = Instance.new("BodyVelocity")
-                    bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
-                    bv.Parent = hrp
+                pcall(function() hum.PlatformStand = true end)
+                local cam = Camera.CFrame
+                local dir = Vector3.zero
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, 1, 0) end
+                if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+                    dir = dir - Vector3.new(0, 1, 0)
                 end
-
-                if not bg or bg.Parent ~= hrp then
-                    bg = Instance.new("BodyGyro")
-                    bg.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
-                    bg.Parent = hrp
+                local md = hum.MoveDirection
+                if dir.Magnitude < 0.05 and md.Magnitude > 0.05 then
+                    dir = Vector3.new(md.X, 0, md.Z)
                 end
-
-                local camCF = Camera.CFrame
-                local moveDir = hum.MoveDirection
-
-                if moveDir.Magnitude > 0 then
-                    local relMove = camCF:VectorToObjectSpace(moveDir)
-                    bv.Velocity = (camCF.RightVector * relMove.X + camCF.LookVector * (-relMove.Z)).Unit * flySpeed
+                local spd = flySpeed or 50
+                local dt = RunService.Heartbeat:Wait()
+                local base = hrp.CFrame
+                if dir.Magnitude > 0 then
+                    local nextPos = base.Position + dir.Unit * spd * dt
+                    hrp.CFrame = CFrame.new(nextPos, nextPos + Vector3.new(cam.LookVector.X, 0, cam.LookVector.Z))
                 else
-                    bv.Velocity = Vector3.zero
+                    hrp.CFrame = CFrame.new(base.Position, base.Position + Vector3.new(cam.LookVector.X, 0, cam.LookVector.Z))
                 end
-                bg.CFrame = camCF
+                -- SAVE CF only (no restore bind)
+                flySavedCF = hrp.CFrame
+                getgenv().InstanceFlySavedCF = flySavedCF
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
             else
-                if bv then bv:Destroy() bv = nil end
-                if bg then bg:Destroy() bg = nil end
+                RunService.Heartbeat:Wait()
             end
-            task.wait()
         end
-
-        if bv then bv:Destroy() bv = nil end
-        if bg then bg:Destroy() bg = nil end
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then pcall(function() hum.PlatformStand = false end) end
     end)
 end
 
@@ -2776,18 +2916,20 @@ end)
 -- ============================================
 
 function buildHubUI()
-MainCol = Library:CreateColumn("메인탭")
+-- ===== 전투 유틸 탭 =====
+CombatCol = Library:CreateColumn("전투유틸")
 
-MainCol:AddSwitch({
+CombatCol:AddSwitch({
     Name = "Silent Aim (사이런트 에임)",
     Default = false,
     Callback = function(Value)
         SILENT_AIM_ENABLED = Value
         createNotification(Value and "Silent Aim ON" or "Silent Aim OFF")
+        updateKeybindsList()
     end
 })
 
-MainCol:AddDropdown({
+CombatCol:AddDropdown({
     Name = "Aim Target (에임 타겟)",
     Options = {"Head", "Body", "Random"},
     Default = "Head",
@@ -2797,256 +2939,28 @@ MainCol:AddDropdown({
     end
 })
 
-MainCol:AddSwitch({
+CombatCol:AddSwitch({
     Name = "No Recoil (총 반동 없애기)",
     Default = false,
     Callback = function(Value)
         NO_RECOIL_ENABLED = Value
         if Value then enableNoRecoil() else disableNoRecoil() end
-    end
-})
-
-MainCol:AddSwitch({
-    Name = "Desync (데스앙크 단독)",
-    Default = false,
-    Callback = function(Value)
-        DESYNC_ENABLED = Value
-        if Value then
-            startStandaloneDesync()
-            createNotification("Desync Standalone Enabled")
-        else
-            stopStandaloneDesync()
-            createNotification("Desync Standalone Disabled")
-        end
-    end
-})
-
-MainCol:AddSwitch({
-    Name = "Rage Bot 1 (레이지봇 1)",
-    Default = false,
-    Callback = function(Value)
-        rbEnabled = Value
-        if Value then
-            startRageBot()
-            createNotification("Rage Bot 1 (Desync Hook) Enabled")
-        else
-            stopRageBot()
-            createNotification("Rage Bot 1 Disabled")
-        end
-    end
-})
-
-MainCol:AddSwitch({
-    Name = "Rage Bot 2 (레이지봇 2)",
-    Default = false,
-    Callback = function(Value)
-        rb2Enabled = Value
-        if Value then
-            startRageBot2()
-            createNotification("Rage Bot 2 Enabled")
-        else
-            stopRageBot2()
-            createNotification("Rage Bot 2 Disabled")
-        end
-    end
-})
-
-MainCol:AddDropdown({
-    Name = "Rage Bot 2 모드",
-    Options = {"UnderBottom", "OverHead", "Behind"},
-    Default = "UnderBottom",
-    Callback = function(Options)
-        rb2Mode = Options[1]
-        createNotification("Rage Bot 2 모드: " .. Options[1])
-    end
-})
-
-MainCol:AddSlider({
-    Name = "RB2 최소 거리 (Min Studs)",
-    Min = 0,
-    Max = 10000,
-    Default = 0,
-    Suffix = " Studs",
-    Callback = function(Value) rb2MinStuds = Value end
-})
-
-MainCol:AddSlider({
-    Name = "RB2 최대 거리 (Max Studs)",
-    Min = 50,
-    Max = 100000,
-    Default = 100000,
-    Suffix = " Studs",
-    Callback = function(Value) rb2MaxStuds = Value end
-})
-
-MainCol:AddSwitch({
-    Name = "Rage Bot 3 (Lunara / 무한거리)",
-    Default = false,
-    Callback = function(Value)
-        rb3Enabled = Value
-        if Value then
-            startRageBot3()
-            createNotification("Rage Bot 3 (Lunara) ON - nearest infinite")
-        else
-            stopRageBot3()
-            createNotification("Rage Bot 3 OFF")
-        end
         updateKeybindsList()
     end
 })
 
-MainCol:AddSwitch({
-    Name = "RB3 Desync (레이지봇3 디싱크)",
-    Default = false,
-    Callback = function(Value)
-        rb3DesyncEnabled = Value
-        createNotification(Value and "RB3 Desync ON" or "RB3 Desync OFF")
-        updateKeybindsList()
-    end
-})
-
-MainCol:AddSwitch({
-    Name = "Full Auto (풀 오토)",
-    Default = false,
-    Callback = function(Value)
-        FULL_AUTO_ENABLED = Value
-        if Value then
-            startFullAuto()
-            createNotification("Full Auto Enabled")
-        else
-            stopFullAuto()
-            createNotification("Full Auto Disabled")
-        end
-    end
-})
-
-MainCol:AddSwitch({
-    Name = "Auto Fire (자동 발사)",
-    Default = false,
-    Callback = function(Value)
-        AUTO_FIRE_ENABLED = Value
-        createNotification(Value and "Auto Fire ON (RB3 자동사격)" or "Auto Fire OFF")
-        updateKeybindsList()
-    end
-})
-
--- ===== Lunara feature toggles (메인탭에서도 ON/OFF) =====
-MainCol:AddSwitch({
-    Name = "Void Spam (보이드 스팸)",
-    Default = false,
-    Callback = function(Value)
-        local LE = getgenv().LunaraExtras
-        if LE and LE.setVoidSpam then
-            LE.setVoidSpam(Value)
-        end
-        createNotification(Value and "Void Spam ON" or "Void Spam OFF")
-        updateKeybindsList()
-    end
-})
-
-MainCol:AddSwitch({
-    Name = "Anti Katana (안티 카타나)",
-    Default = false,
-    Callback = function(Value)
-        local LE = getgenv().LunaraExtras
-        if LE and LE.setAntiKatana then
-            LE.setAntiKatana(Value)
-        end
-        createNotification(Value and "Anti Katana ON" or "Anti Katana OFF")
-        updateKeybindsList()
-    end
-})
-
-MainCol:AddSwitch({
-    Name = "Device Spoof (기기 스푸퍼)",
-    Default = false,
-    Callback = function(Value)
-        _G.Features = _G.Features or {}
-        _G.Features.DeviceSpoof = _G.Features.DeviceSpoof or { Enabled = false, CurrentDevice = "Console", LastApplied = 0 }
-        _G.Features.DeviceSpoof.Enabled = Value
-        if Value and type(applydevice) == "function" then
-            pcall(applydevice)
-        end
-        createNotification(Value and "Device Spoof ON" or "Device Spoof OFF")
-        updateKeybindsList()
-    end
-})
-
-MainCol:AddDropdown({
-    Name = "Device Type (기기 종류)",
-    Options = {"Mobile", "Console", "VR", "PC"},
-    Default = "Console",
-    Callback = function(Options)
-        _G.Features = _G.Features or {}
-        _G.Features.DeviceSpoof = _G.Features.DeviceSpoof or { Enabled = false, CurrentDevice = "Console", LastApplied = 0 }
-        local val = type(Options) == "table" and Options[1] or Options
-        _G.Features.DeviceSpoof.CurrentDevice = val
-        if _G.Features.DeviceSpoof.Enabled and type(applydevice) == "function" then
-            pcall(applydevice)
-        end
-        createNotification("Device: " .. tostring(val))
-        updateKeybindsList()
-    end
-})
-
-MainCol:AddSwitch({
-    Name = "Level Spoof (레벨 스푸퍼)",
-    Default = false,
-    Callback = function(Value)
-        local LE = getgenv().LunaraExtras
-        if LE and LE.setLevelSpoof then
-            LE.setLevelSpoof(Value, nil)
-        end
-        createNotification(Value and "Level Spoof ON" or "Level Spoof OFF")
-        updateKeybindsList()
-    end
-})
-
-MainCol:AddSlider({
-    Name = "Level 값",
-    Min = 1,
-    Max = 9999,
-    Default = 9999,
-    Suffix = " Lv",
-    Callback = function(Value)
-        local LE = getgenv().LunaraExtras
-        if LE and LE.setLevelSpoof then
-            local on = LE.config and LE.config.levelSpoof and LE.config.levelSpoof.enabled
-            LE.setLevelSpoof(on, Value)
-        end
-    end
-})
-
-MainCol:AddSwitch({
-    Name = "Hit Notification (히트 알림)",
-    Default = false,
-    Callback = function(Value)
-        local LE = getgenv().LunaraExtras
-        if LE and LE.setHitNotif then
-            LE.setHitNotif(Value)
-        end
-        createNotification(Value and "Hit Notification ON" or "Hit Notification OFF")
-        updateKeybindsList()
-    end
-})
-
-MainCol:AddSlider({
+CombatCol:AddSlider({
     Name = "총기 연사속도 증가율 (%)",
-    Min = 0,
-    Max = 100,
-    Default = 0,
-    Suffix = "%",
+    Min = 0, Max = 100, Default = 0, Suffix = "%",
     Callback = function(Value)
         local weaponDataCache
         local modulesFolder = ReplicatedStorage:FindFirstChild("Modules")
         if modulesFolder then
-            local possibleNames = {"ItemLibrary", "WeaponStats", "Items", "WeaponData", "Weapons"}
-            for _, name in ipairs(possibleNames) do
+            for _, name in ipairs({"ItemLibrary", "WeaponStats", "Items", "WeaponData", "Weapons"}) do
                 local found = modulesFolder:FindFirstChild(name)
-                if found then weaponDataCache = require(found) break end
+                if found then pcall(function() weaponDataCache = require(found) end) break end
             end
         end
-
         if weaponDataCache and weaponDataCache.Items then
             local keys = {"ShootCooldown", "ShootBurstCooldown", "AttackCooldown", "HeavyAttackCooldown", "Cooldown", "ReloadTime"}
             for itemName, stats in pairs(weaponDataCache.Items) do
@@ -3057,7 +2971,6 @@ MainCol:AddSlider({
                     end
                 end
             end
-
             local multiplier = (100 - Value) / 100
             for itemName, stats in pairs(weaponDataCache.Items) do
                 if originalData[itemName] then
@@ -3069,10 +2982,232 @@ MainCol:AddSlider({
                     end
                 end
             end
-            createNotification("연사 속도 변경 완료: " .. Value .. "%")
+            createNotification("연사 속도: " .. Value .. "%")
         end
     end
 })
+
+CombatCol:AddSwitch({
+    Name = "Device Spoofer (기기 스푸퍼)",
+    Default = false,
+    Callback = function(Value)
+        if not _G.Features then _G.Features = {} end
+        if not _G.Features.DeviceSpoof then _G.Features.DeviceSpoof = { Enabled = false, CurrentDevice = "Mobile" } end
+        _G.Features.DeviceSpoof.Enabled = Value
+        if Value and applydevice then pcall(applydevice) end
+        createNotification(Value and "Device Spoof ON" or "Device Spoof OFF")
+        updateKeybindsList()
+    end
+})
+
+CombatCol:AddDropdown({
+    Name = "Device 종류",
+    Options = {"Mobile", "Console", "VR", "PC"},
+    Default = "Mobile",
+    Callback = function(Options)
+        local val = type(Options) == "table" and Options[1] or Options
+        if not _G.Features then _G.Features = {} end
+        if not _G.Features.DeviceSpoof then _G.Features.DeviceSpoof = {} end
+        _G.Features.DeviceSpoof.CurrentDevice = val
+        if _G.Features.DeviceSpoof.Enabled and applydevice then pcall(applydevice) end
+        createNotification("Device: " .. tostring(val))
+    end
+})
+
+CombatCol:AddSwitch({
+    Name = "Level Spoof (레벨 스푸퍼)",
+    Default = false,
+    Callback = function(Value)
+        local LE = getgenv().LunaraExtras
+        if LE and LE.setLevelSpoof then LE.setLevelSpoof(Value, nil) end
+        createNotification(Value and "Level Spoof ON" or "Level Spoof OFF")
+        updateKeybindsList()
+    end
+})
+
+CombatCol:AddSlider({
+    Name = "Level 값",
+    Min = 1, Max = 9999, Default = 9999, Suffix = " Lv",
+    Callback = function(Value)
+        local LE = getgenv().LunaraExtras
+        if LE and LE.setLevelSpoof then
+            local on = LE.config and LE.config.levelSpoof and LE.config.levelSpoof.enabled
+            LE.setLevelSpoof(on, Value)
+        end
+    end
+})
+
+CombatCol:AddSwitch({
+    Name = "Anti Katana (안티 카타나)",
+    Default = false,
+    Callback = function(Value)
+        local LE = getgenv().LunaraExtras
+        if LE and LE.setAntiKatana then LE.setAntiKatana(Value) end
+        createNotification(Value and "Anti Katana ON" or "Anti Katana OFF")
+        updateKeybindsList()
+    end
+})
+
+CombatCol:AddSwitch({
+    Name = "Hit Notification (히트 알림)",
+    Default = false,
+    Callback = function(Value)
+        local M = getgenv().MiscExtras
+        local LE = getgenv().LunaraExtras
+        if M and M.setHitNotif then M.setHitNotif(Value) end
+        if LE and LE.setHitNotif then LE.setHitNotif(Value) end
+        createNotification(Value and "Hit Notification ON" or "Hit Notification OFF")
+        updateKeybindsList()
+    end
+})
+
+CombatCol:AddSwitch({
+    Name = "Hit Sound (히트 사운드)",
+    Default = false,
+    Callback = function(Value)
+        local M = getgenv().MiscExtras
+        if M and M.setHitSound then M.setHitSound(Value) end
+        createNotification(Value and "Hit Sound ON" or "Hit Sound OFF")
+        updateKeybindsList()
+    end
+})
+
+CombatCol:AddDropdown({
+    Name = "Hit Sound 종류",
+    Options = {"Rust HS","Among Us","Bonk","Bruh","Fart","Minecraft","Neverlose","Osu","Stars","Vine"},
+    Default = "Rust HS",
+    Callback = function(Options)
+        local M = getgenv().MiscExtras
+        local v = type(Options) == "table" and Options[1] or Options
+        if M and M.setHitSoundStyle then M.setHitSoundStyle(v) end
+    end
+})
+
+-- ===== 레이지봇 탭 =====
+RageCol = Library:CreateColumn("레이지봇")
+
+RageCol:AddSwitch({
+    Name = "Ragebot 0 / 주먹 레이지봇",
+    Default = false,
+    Callback = function(Value)
+        DESYNC_ENABLED = Value
+        if Value then
+            startStandaloneDesync()
+            createNotification("Ragebot 0 (주먹) ON")
+        else
+            stopStandaloneDesync()
+            createNotification("Ragebot 0 OFF")
+        end
+        updateKeybindsList()
+    end
+})
+
+RageCol:AddSwitch({
+    Name = "Rage Bot 1 (레이지봇 1)",
+    Default = false,
+    Callback = function(Value)
+        rbEnabled = Value
+        if Value then startRageBot() createNotification("Rage Bot 1 ON")
+        else stopRageBot() createNotification("Rage Bot 1 OFF") end
+        updateKeybindsList()
+    end
+})
+
+RageCol:AddSwitch({
+    Name = "Rage Bot 2 (레이지봇 2)",
+    Default = false,
+    Callback = function(Value)
+        rb2Enabled = Value
+        if Value then startRageBot2() createNotification("Rage Bot 2 ON")
+        else stopRageBot2() createNotification("Rage Bot 2 OFF") end
+        updateKeybindsList()
+    end
+})
+
+RageCol:AddDropdown({
+    Name = "Rage Bot 2 모드",
+    Options = {"UnderBottom", "OverHead", "Behind"},
+    Default = "UnderBottom",
+    Callback = function(Options)
+        rb2Mode = Options[1]
+        createNotification("RB2 모드: " .. Options[1])
+    end
+})
+
+RageCol:AddSwitch({
+    Name = "Rage Bot 3 (레이지봇 3)",
+    Default = false,
+    Callback = function(Value)
+        rb3Enabled = Value
+        if Value then
+            startRageBot3()
+            createNotification("Rage Bot 3 ON")
+        else
+            stopRageBot3()
+            createNotification("Rage Bot 3 OFF")
+        end
+        updateKeybindsList()
+    end
+})
+
+RageCol:AddSwitch({
+    Name = "RB1 Desync (레이지봇1 전용)",
+    Default = false,
+    Callback = function(Value)
+        rb1DesyncEnabled = Value and true or false
+        if not rb1DesyncEnabled then
+            pcall(function() if rb1StopDesync then rb1StopDesync() end end)
+        end
+        createNotification(rb1DesyncEnabled and "RB1 Desync ON" or "RB1 Desync OFF")
+        updateKeybindsList()
+    end
+})
+
+RageCol:AddSwitch({
+    Name = "RB3 Desync (레이지봇3 전용)",
+    Default = false,
+    Callback = function(Value)
+        rb3DesyncEnabled = Value and true or false
+        if not rb3DesyncEnabled then
+            pcall(function() RunService:UnbindFromRenderStep("Restore_RB3") end)
+        end
+        createNotification(rb3DesyncEnabled and "RB3 Desync ON" or "RB3 Desync OFF")
+        updateKeybindsList()
+    end
+})
+
+RageCol:AddSwitch({
+    Name = "Void Spam (켠 레이지봇 전부)",
+    Default = false,
+    Callback = function(Value)
+        local LE = getgenv().LunaraExtras
+        if LE and LE.setVoidSpam then LE.setVoidSpam(Value) end
+        createNotification(Value and "Void Spam ON (RB1/2/3/0)" or "Void Spam OFF")
+        updateKeybindsList()
+    end
+})
+
+RageCol:AddSwitch({
+    Name = "Auto Fire (자동 발사)",
+    Default = false,
+    Callback = function(Value)
+        AUTO_FIRE_ENABLED = Value
+        createNotification(Value and "Auto Fire ON" or "Auto Fire OFF")
+        updateKeybindsList()
+    end
+})
+
+RageCol:AddSwitch({
+    Name = "Full Auto (풀 오토)",
+    Default = false,
+    Callback = function(Value)
+        FULL_AUTO_ENABLED = Value
+        if Value then startFullAuto() createNotification("Full Auto ON")
+        else stopFullAuto() createNotification("Full Auto OFF") end
+        updateKeybindsList()
+    end
+})
+
 
 PlayerCol = Library:CreateColumn("플레이어탭")
 
@@ -3153,6 +3288,27 @@ PlayerCol:AddSwitch({
         end
     end
 })
+
+PlayerCol:AddSlider({
+    Name = "Slide Boost (슬라이드 배율)",
+    Min = 10,
+    Max = 50,
+    Default = 10,
+    Suffix = " x0.1",
+    Callback = function(Value)
+        local mult = (tonumber(Value) or 10) / 10
+        local M = getgenv().MiscExtras
+        if M and M.setSlideBoostMult then
+            M.setSlideBoostMult(mult)
+        else
+            SLIDE_BOOST_MULT = mult
+            SLIDE_BOOST_ENABLED = mult > 1.01
+        end
+        createNotification(mult <= 1.01 and "Slide 원래 속도" or ("Slide Boost x" .. tostring(mult)))
+        updateKeybindsList()
+    end
+})
+
 
 VisualCol = Library:CreateColumn("비주얼탭")
 
@@ -3297,18 +3453,70 @@ AnimMatchCol:AddSwitch({
     Name = "Auto Match",
     Default = false,
     Callback = function(Value)
-        AUTO_MATCH_ENABLED = Value
+        local M = getgenv().MiscExtras
+        if M and M.setAutoQueue then
+            M.setAutoQueue(Value)
+        else
+            AUTO_MATCH_ENABLED = Value
+        end
         createNotification(Value and "Auto Match ON" or "Auto Match OFF")
+        updateKeybindsList()
     end
 })
 
 AnimMatchCol:AddDropdown({
     Name = "Auto Match 모드",
-    Options = {"1v1", "2v2", "3v3", "FFA"},
+    Options = {"1v1", "2v2", "3v3", "4v4", "5v5", "FFA"},
     Default = "1v1",
     Callback = function(Options)
         AUTO_MATCH_MODE = Options[1]
+        local M = getgenv().MiscExtras
+        if M and M.setQueueMode then M.setQueueMode(Options[1]) end
         createNotification("Auto Match 모드: " .. Options[1])
+    end
+})
+
+AnimMatchCol:AddSwitch({
+    Name = "Auto Match Ranked (랭크)",
+    Default = false,
+    Callback = function(Value)
+        local M = getgenv().MiscExtras
+        if M and M.setQueueRanked then M.setQueueRanked(Value) end
+        createNotification(Value and "Ranked Queue ON" or "Ranked Queue OFF")
+        updateKeybindsList()
+    end
+})
+
+AnimMatchCol:AddSwitch({
+    Name = "Auto Ban Ranked (무기 밴)",
+    Default = false,
+    Callback = function(Value)
+        local M = getgenv().MiscExtras
+        if M and M.setAutoBan then M.setAutoBan(Value) end
+        createNotification(Value and "Auto Ban ON" or "Auto Ban OFF")
+        updateKeybindsList()
+    end
+})
+
+AnimMatchCol:AddDropdown({
+    Name = "Ban Weapon 1",
+    Options = {"Riot Shield","Katana","Assault Rifle","Sniper","Bow","Shotgun","RPG","Minigun","Revolver","Uzi","Knife","Fists","Scythe","Maul","Grenade","Flashbang","Medkit"},
+    Default = "Riot Shield",
+    Callback = function(Options)
+        local M = getgenv().MiscExtras
+        local v = type(Options) == "table" and Options[1] or Options
+        if M and M.setBanWeapons then M.setBanWeapons(v, nil) end
+    end
+})
+
+AnimMatchCol:AddDropdown({
+    Name = "Ban Weapon 2",
+    Options = {"Katana","Riot Shield","Assault Rifle","Sniper","Bow","Shotgun","RPG","Minigun","Revolver","Uzi","Knife","Fists","Scythe","Maul","Grenade","Flashbang","Medkit"},
+    Default = "Katana",
+    Callback = function(Options)
+        local M = getgenv().MiscExtras
+        local v = type(Options) == "table" and Options[1] or Options
+        if M and M.setBanWeapons then M.setBanWeapons(nil, v) end
     end
 })
 
@@ -3371,6 +3579,23 @@ EnvCol:AddDropdown({
 })
 
 ConfigCol = Library:CreateColumn("설정탭")
+
+ConfigCol:AddButton("스크립트 자동 불러오기 (GitHub)", function()
+    createNotification("스크립트 로드 중...")
+    task.spawn(function()
+        local ok, err = pcall(function()
+            local src = game:HttpGet("https://raw.githubusercontent.com/mineminyee222/Myhack/refs/heads/main/Myhack")
+            local fn = loadstring(src)
+            if not fn then error("loadstring failed") end
+            fn()
+        end)
+        if ok then
+            createNotification("스크립트 로드 완료")
+        else
+            createNotification("로드 실패: " .. tostring(err))
+        end
+    end)
+end)
 
 ConfigCol:AddButton("설정 저장 (Save Config)", function()
     local success = ConfigSystem:Save("default.json")
@@ -3639,12 +3864,341 @@ LocalPlayer.CharacterAdded:Connect(function()
     end)
 end)
 
+
+-- ============================================================
+-- Misc: Auto Ban Ranked / Auto Queue Ranked / Hit Notif / Hit Sounds
+-- ============================================================
+function initMiscExtras()
+    local weapons = {
+        "Assault Rifle","Sniper","Bow","Burst Rifle","Crossbow","Gunblade","RPG","Shotgun",
+        "Energy Rifle","Flamethrower","Grenade Launcher","Minigun","Paintball Gun","Distortion",
+        "Permafrost","Handgun","Daggers","Flare Gun","Revolver","Shorty","Spray","Uzi",
+        "Energy Pistols","Exogun","Slingshot","Warper","Fists","Battle Axe","Chainsaw","Katana",
+        "Knife","Riot Shield","Scythe","Maul","Trowel","Grenade","Flashbang","Freeze Ray",
+        "Jump Pad","Molotov","Satchel","Smoke Grenade","War Horn","Medkit","Substapce Tripmine",
+        "Warpstone","Hook","Spear"
+    }
+
+    local banThread, queueThread = nil, nil
+    local voteRemote = nil
+    pcall(function()
+        voteRemote = ReplicatedStorage:WaitForChild("Remotes", 5)
+            :WaitForChild("Duels", 5):WaitForChild("Vote", 5)
+    end)
+
+    local function stopAutoBan()
+        banThread = nil
+    end
+    local function startAutoBan()
+        stopAutoBan()
+        banThread = task.spawn(function()
+            local i = 1
+            local lastFire = 0
+            while AUTO_BAN_ENABLED and banThread do
+                if not voteRemote then
+                    pcall(function()
+                        voteRemote = ReplicatedStorage:FindFirstChild("Remotes")
+                            and ReplicatedStorage.Remotes:FindFirstChild("Duels")
+                            and ReplicatedStorage.Remotes.Duels:FindFirstChild("Vote")
+                    end)
+                end
+                local list = {}
+                if AUTO_BAN_W1 and AUTO_BAN_W1 ~= "" then table.insert(list, AUTO_BAN_W1) end
+                if AUTO_BAN_W2 and AUTO_BAN_W2 ~= "" then table.insert(list, AUTO_BAN_W2) end
+                local now = tick()
+                -- throttle hard: only 1 vote every 2.5s (prevents freeze)
+                if voteRemote and #list > 0 and (now - lastFire) >= 2.5 then
+                    pcall(function() voteRemote:FireServer(list[i]) end)
+                    i = i % #list + 1
+                    lastFire = now
+                end
+                task.wait(0.5)
+            end
+        end)
+    end
+
+    local function stopAutoQueue()
+        queueThread = nil
+    end
+    local function startAutoQueue()
+        stopAutoQueue()
+        queueThread = task.spawn(function()
+            while AUTO_MATCH_ENABLED and queueThread do
+                pcall(function()
+                    local mm = ReplicatedStorage:FindFirstChild("Remotes")
+                    mm = mm and mm:FindFirstChild("Matchmaking")
+                    local jq = mm and mm:FindFirstChild("JoinQueue")
+                    if not jq then return end
+                    local mode = AUTO_MATCH_MODE or "1v1"
+                    if AUTO_QUEUE_RANKED then
+                        jq:InvokeServer(mode, true)
+                    else
+                        jq:InvokeServer(mode)
+                    end
+                end)
+                task.wait(3)
+            end
+        end)
+    end
+
+    -- Lightweight Hit Notification UI
+    local hitGui = Instance.new("ScreenGui")
+    hitGui.Name = "mineminyeeHitNotif"
+    hitGui.ResetOnSpawn = false
+    hitGui.DisplayOrder = 999998
+    hitGui.Parent = playerGui
+    local hitRoot = Instance.new("Frame")
+    hitRoot.Size = UDim2.new(0, 320, 0, 280)
+    hitRoot.Position = UDim2.new(0, 12, 0, 12)
+    hitRoot.BackgroundTransparency = 1
+    hitRoot.Parent = hitGui
+    local hitLayout = Instance.new("UIListLayout")
+    hitLayout.Padding = UDim.new(0, 4)
+    hitLayout.Parent = hitRoot
+    local hitEnabled = false
+    local lastHp = {}
+
+    local function pushHit(name, dmg, part)
+        if not hitEnabled or dmg < 0.5 then return end
+        local row = Instance.new("TextLabel")
+        row.Size = UDim2.new(1, 0, 0, 22)
+        row.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+        row.BackgroundTransparency = 0.25
+        row.BorderSizePixel = 0
+        row.Text = string.format("hit %s for %d in the %s", name, math.floor(dmg + 0.5), part or "Body")
+        row.TextColor3 = Color3.fromRGB(235, 235, 235)
+        row.Font = Enum.Font.Code
+        row.TextSize = 14
+        row.TextXAlignment = Enum.TextXAlignment.Left
+        row.Parent = hitRoot
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 4)
+        c.Parent = row
+        task.delay(3, function()
+            pcall(function() row:Destroy() end)
+        end)
+        local kids = hitRoot:GetChildren()
+        local labels = {}
+        for _, k in ipairs(kids) do
+            if k:IsA("TextLabel") then table.insert(labels, k) end
+        end
+        while #labels > 8 do
+            labels[1]:Destroy()
+            table.remove(labels, 1)
+        end
+    end
+
+    RunService.Heartbeat:Connect(function()
+        if not hitEnabled then return end
+        pcall(function()
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr == LocalPlayer then continue end
+                local hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+                if not hum then continue end
+                local prev = lastHp[plr]
+                local cur = hum.Health
+                if prev == nil then
+                    lastHp[plr] = cur
+                elseif cur < prev - 0.5 then
+                    pushHit(plr.Name, prev - cur, "Body")
+                    lastHp[plr] = cur
+                    if HIT_SOUND_ENABLED then
+                        pcall(function() getgenv().InstancePlayHitSound() end)
+                    end
+                elseif cur > prev then
+                    lastHp[plr] = cur
+                end
+            end
+        end)
+    end)
+
+    -- Hit Sounds
+    local soundFolder = "Hitsounds/sounds"
+    local soundFiles = {
+        ["Among Us"] = "amongus.mp3", ["Bonk"] = "bonk.mp3", ["Bruh"] = "bruh.mp3",
+        ["Fart"] = "fart.mp3", ["Minecraft"] = "minecraft.mp3", ["Neverlose"] = "neverlose.mp3",
+        ["Osu"] = "osu.mp3", ["Stars"] = "Stars.mp3", ["Rust HS"] = "rust hs.mp3", ["Vine"] = "vine.mp3",
+    }
+    local links = {
+        ["amongus.mp3"] = "https://www.myinstants.com/media/sounds/roblox-death-sound_ytkBL7X.mp3",
+        ["minecraft.mp3"] = "https://www.myinstants.com/media/sounds/steve-old-hurt-sound_XKZxUk4.mp3",
+        ["bruh.mp3"] = "https://www.myinstants.com/media/sounds/discord-notification.mp3",
+        ["fart.mp3"] = "https://www.myinstants.com/media/sounds/fart-moan3.mp3",
+        ["neverlose.mp3"] = "https://www.myinstants.com/media/sounds/neverlose-s.mp3",
+        ["rust hs.mp3"] = "https://www.myinstants.com/media/sounds/eaolwpzhgsba.mp3",
+        ["osu.mp3"] = "https://www.myinstants.com/media/sounds/osu-hit-sound.mp3",
+        ["Stars.mp3"] = "https://www.myinstants.com/media/sounds/starshitsound.mp3",
+        ["bonk.mp3"] = "https://www.myinstants.com/media/sounds/bonk.mp3",
+        ["vine.mp3"] = "https://www.myinstants.com/media/sounds/vine-boom.mp3",
+    }
+    task.spawn(function()
+        pcall(function()
+            if isfolder and makefolder and writefile and isfile then
+                if not isfolder("Hitsounds") then makefolder("Hitsounds") end
+                if not isfolder(soundFolder) then makefolder(soundFolder) end
+                for fn, url in pairs(links) do
+                    local fp = soundFolder .. "/" .. fn
+                    if not isfile(fp) then
+                        pcall(function() writefile(fp, game:HttpGet(url, true)) end)
+                        task.wait(0.5)
+                    end
+                end
+            end
+        end)
+    end)
+
+    getgenv().InstancePlayHitSound = function()
+        if not HIT_SOUND_ENABLED then return end
+        pcall(function()
+            local filename = soundFiles[HIT_SOUND_STYLE] or soundFiles["Rust HS"]
+            local fullPath = soundFolder .. "/" .. filename
+            if isfile and not isfile(fullPath) then fullPath = soundFolder .. "/rust hs.mp3" end
+            local asset = (getsynasset and getsynasset(fullPath)) or (getcustomasset and getcustomasset(fullPath))
+            if not asset then return end
+            local sound = Instance.new("Sound")
+            sound.SoundId = asset
+            sound.Volume = HIT_SOUND_VOLUME or 0.5
+            sound.PlaybackSpeed = HIT_SOUND_PITCH or 1
+            sound.Parent = workspace
+            sound:Play()
+            task.delay(4, function() pcall(function() sound:Destroy() end) end)
+        end)
+    end
+
+
+    -- Slide boost (MechanicsController)
+    local slideHooked = false
+    local slideBaseSpeed = nil
+    local function applySlideBoost()
+        pcall(function()
+            local mech = require(LocalPlayer.PlayerScripts.Controllers.MechanicsController)
+            if not mech or not mech.Slide then return end
+            if not slideHooked then
+                local old = mech.Slide
+                function mech:Slide(...)
+                    local f = self.LocalFighter
+                    if f then
+                        pcall(function()
+                            if slideBaseSpeed == nil then
+                                slideBaseSpeed = f:Get("SlidingSpeedMax") or 3
+                            end
+                            local mult = tonumber(SLIDE_BOOST_MULT) or 1
+                            if mult <= 1.01 then
+                                f:Set("SlidingSpeedMax", slideBaseSpeed)
+                            else
+                                f:Set("SlidingSpeedMax", slideBaseSpeed * mult)
+                            end
+                        end)
+                    end
+                    return old(self, ...)
+                end
+                slideHooked = true
+            end
+            -- also apply immediately to LocalFighter if present
+            pcall(function()
+                local fc = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
+                local f = fc and fc.LocalFighter
+                if f then
+                    if slideBaseSpeed == nil then
+                        slideBaseSpeed = f:Get("SlidingSpeedMax") or 3
+                    end
+                    local mult = tonumber(SLIDE_BOOST_MULT) or 1
+                    if mult <= 1.01 then
+                        f:Set("SlidingSpeedMax", slideBaseSpeed)
+                    else
+                        f:Set("SlidingSpeedMax", slideBaseSpeed * mult)
+                    end
+                end
+            end)
+        end)
+    end
+    task.spawn(function()
+        for _ = 1, 25 do
+            applySlideBoost()
+            if slideHooked then break end
+            task.wait(1)
+        end
+    end)
+
+    -- Auto collect health / ammo drops
+    AUTO_COLLECT_HEALTH = true
+    AUTO_COLLECT_AMMO = true
+    RunService.RenderStepped:Connect(function()
+        pcall(function()
+            local character = LocalPlayer.Character
+            if not character then return end
+            local hrp = character:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            local needsHealth = humanoid and humanoid.Health < humanoid.MaxHealth
+            if not firetouchinterest then return end
+            for _, obj in ipairs(workspace:GetChildren()) do
+                if obj.Name == "_drop" and obj:IsA("BasePart") then
+                    local want = false
+                    if needsHealth and obj:FindFirstChild("Health") then
+                        want = true
+                    end
+                    if obj:FindFirstChild("Ammo") then
+                        want = true
+                    end
+                    if want then
+                        pcall(function()
+                            firetouchinterest(hrp, obj, 0)
+                            firetouchinterest(hrp, obj, 1)
+                        end)
+                    end
+                end
+            end
+        end)
+    end)
+
+    getgenv().MiscExtras = {
+        weapons = weapons,
+        setAutoBan = function(v)
+            AUTO_BAN_ENABLED = v and true or false
+            if AUTO_BAN_ENABLED then startAutoBan() else stopAutoBan() end
+        end,
+        setBanWeapons = function(w1, w2)
+            if w1 then AUTO_BAN_W1 = w1 end
+            if w2 then AUTO_BAN_W2 = w2 end
+            if AUTO_BAN_ENABLED then startAutoBan() end
+        end,
+        setAutoQueue = function(v)
+            AUTO_MATCH_ENABLED = v and true or false
+            if AUTO_MATCH_ENABLED then startAutoQueue() else stopAutoQueue() end
+        end,
+        setQueueRanked = function(v)
+            AUTO_QUEUE_RANKED = v and true or false
+            if AUTO_MATCH_ENABLED then startAutoQueue() end
+        end,
+        setQueueMode = function(m)
+            AUTO_MATCH_MODE = m or "1v1"
+            if AUTO_MATCH_ENABLED then startAutoQueue() end
+        end,
+        setHitNotif = function(v) hitEnabled = v and true or false end,
+        setHitSound = function(v) HIT_SOUND_ENABLED = v and true or false end,
+        setHitSoundStyle = function(s) HIT_SOUND_STYLE = s or "Rust HS" end,
+        setHitSoundVolume = function(v) HIT_SOUND_VOLUME = (tonumber(v) or 50) / 100 end,
+        setHitSoundPitch = function(v) HIT_SOUND_PITCH = (tonumber(v) or 100) / 100 end,
+        setSlideBoost = function(v)
+            SLIDE_BOOST_ENABLED = v and true or false
+            if SLIDE_BOOST_ENABLED then applySlideBoost() end
+        end,
+        setSlideBoostMult = function(v)
+            SLIDE_BOOST_MULT = math.clamp(tonumber(v) or 1.5, 1, 5)
+            SLIDE_BOOST_ENABLED = SLIDE_BOOST_MULT > 1.01
+            applySlideBoost()
+        end,
+        allSounds = {"Among Us","Bonk","Bruh","Fart","Minecraft","Neverlose","Osu","Stars","Rust HS","Vine"},
+    }
+end
+
 function initLunaraExtras()
     local config = rawget(_G, "LunaraConfig") or {
         voidspam = {
             enabled = false,
-            shoot_min = 0.4, shoot_max = 0.6,
-            hide_min = 0.25, hide_max = 0.4,
+            shoot_min = 0.5, shoot_max = 0.7,
+            hide_min = 0.2, hide_max = 0.35,
             phase = nil, lastswitch = 0, currentduration = 0,
         },
         antikatana = false,
@@ -3715,18 +4269,19 @@ function initLunaraExtras()
     end
     getgenv().InstanceIsKatanaDeflecting = isKatanaDeflecting
 
-    -- Void Spam (from void_spam.lua reference)
-    local vfrSnap = { cf = nil, lv = nil, av = nil }
-    local vfrLim, vfrDead = 1e8, 1e5
+    -- Void Spam (NO built-in desync)
+    -- hide: actually move to void (visible if Desync OFF)
+    -- client restore ONLY when RB3 Desync or Ragebot0 Desync is ON
+    local vfrSnap = { cf = nil, lv = nil, av = nil, active = false }
 
     local function randVs(a, b)
-        a, b = tonumber(a) or 1, tonumber(b) or 1
+        a, b = tonumber(a) or 0.4, tonumber(b) or 0.6
         if a > b then a, b = b, a end
         return a + math.random() * (b - a)
     end
 
     local function clrVoidSnap()
-        vfrSnap.cf, vfrSnap.lv, vfrSnap.av = nil, nil, nil
+        vfrSnap.cf, vfrSnap.lv, vfrSnap.av, vfrSnap.active = nil, nil, nil, false
     end
 
     local function voidHrp()
@@ -3734,48 +4289,23 @@ function initLunaraExtras()
         return char and char:FindFirstChild("HumanoidRootPart")
     end
 
-    local function rndSkip(mi, ma, dmi, dma)
-        local val = math.random(mi, ma)
-        local guard = 0
-        while val >= dmi and val <= dma and guard < 30 do
-            val = math.random(mi, ma)
-            guard = guard + 1
-        end
-        return val
+    local function voidDesyncOn()
+        if rb1DesyncEnabled and rbEnabled then return true end
+        if rb3DesyncEnabled and rb3Enabled then return true end
+        if DESYNC_ENABLED then return true end -- Ragebot 0
+        return false
     end
 
-    local function snapVoid(hrp)
-        if not hrp then return end
-        -- save client visual pose every snap
-        vfrSnap.cf = hrp.CFrame
-        vfrSnap.lv = hrp.AssemblyLinearVelocity
-        vfrSnap.av = hrp.AssemblyAngularVelocity
-        local lim, dead = vfrLim, vfrDead
-        pcall(function()
-            local p = Vector3.new(
-                rndSkip(-lim, lim, -dead, dead),
-                rndSkip(-lim, lim, -dead, dead),
-                rndSkip(-lim, lim, -dead, dead)
-            )
-            local v = Vector3.new(
-                rndSkip(-lim, lim, -dead, dead),
-                rndSkip(-lim, lim, -dead, dead),
-                rndSkip(-lim, lim, -dead, dead)
-            )
-            hrp.CFrame = CFrame.new(p) * CFrame.Angles(math.pi, math.pi, math.pi)
-            hrp.AssemblyLinearVelocity = v
-            hrp.AssemblyAngularVelocity = v
-        end)
+    local function anyRagebotOn()
+        return rbEnabled or rb2Enabled or rb3Enabled or DESYNC_ENABLED
     end
 
-    -- client restore ALWAYS while snap active (First priority like original)
+    -- Client restore ONLY if separate Desync is enabled
     pcall(function()
         RunService:UnbindFromRenderStep("vfr_csync")
-        RunService:UnbindFromRenderStep("ms_lunara_vfr")
-    end)
-    pcall(function()
         RunService:BindToRenderStep("vfr_csync", Enum.RenderPriority.First.Value, function()
-            if not vfrSnap.cf then return end
+            if not voidDesyncOn() then return end
+            if not vfrSnap.active or not vfrSnap.cf then return end
             local hrp = voidHrp()
             if not hrp then return end
             pcall(function()
@@ -3786,18 +4316,60 @@ function initLunaraExtras()
         end)
     end)
 
+    local function snapVoid(hrp)
+        if not hrp or flyEnabled then return end
+        -- save real pose for optional desync restore
+        if not vfrSnap.cf then
+            vfrSnap.cf = hrp.CFrame
+            vfrSnap.lv = hrp.AssemblyLinearVelocity
+            vfrSnap.av = hrp.AssemblyAngularVelocity
+        end
+        vfrSnap.active = true
+        -- actual void (under map, safe enough not to always kill)
+        pcall(function()
+            local base = vfrSnap.cf.Position
+            local voidPos = Vector3.new(
+                base.X + (math.random() - 0.5) * 20,
+                base.Y - 250,
+                base.Z + (math.random() - 0.5) * 20
+            )
+            hrp.CFrame = CFrame.new(voidPos)
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+
     local function tickVoidSpam()
         local vs = config.voidspam
-        if not vs or not vs.enabled then
-            if vfrSnap.cf then
+        -- Void applies to ANY active ragebot (1/2/3/0)
+        if not vs or not vs.enabled or not anyRagebotOn() then
+            if vfrSnap.active and vfrSnap.cf then
                 local hrp = voidHrp()
-                if hrp then
-                    pcall(function()
-                        hrp.CFrame = vfrSnap.cf
-                        hrp.AssemblyLinearVelocity = vfrSnap.lv or Vector3.zero
-                    end)
+                if hrp and voidDesyncOn() then
+                    pcall(function() hrp.CFrame = vfrSnap.cf end)
                 end
             end
+            clrVoidSnap()
+            if vs then vs.phase = nil end
+            return
+        end
+        local hasEnemy = false
+        pcall(function()
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LocalPlayer and plr.Character then
+                    local h = plr.Character:FindFirstChildOfClass("Humanoid")
+                    if h and h.Health > 0 then
+                        local a = LocalPlayer:GetAttribute("TeamID")
+                        local b = plr:GetAttribute("TeamID")
+                        if not (a and b and a == b) then
+                            hasEnemy = true
+                            break
+                        end
+                    end
+                end
+            end
+        end)
+        if not hasEnemy then
             clrVoidSnap()
             return
         end
@@ -3808,31 +4380,44 @@ function initLunaraExtras()
             vs.currentduration = randVs(vs.shoot_min, vs.shoot_max)
         end
         local elapsed = now - (vs.lastswitch or 0)
+        local hrp = voidHrp()
+
         if vs.phase == "shoot" then
-            clrVoidSnap()
-            if elapsed >= (vs.currentduration or 1) then
+            -- visible / real position; refresh save
+            if hrp then
+                vfrSnap.cf = hrp.CFrame
+                vfrSnap.lv = hrp.AssemblyLinearVelocity
+                vfrSnap.av = hrp.AssemblyAngularVelocity
+            end
+            vfrSnap.active = false
+            if elapsed >= (vs.currentduration or 0.5) then
                 vs.phase = "hide"
                 vs.currentduration = randVs(vs.hide_min, vs.hide_max)
                 vs.lastswitch = now
             end
         elseif vs.phase == "hide" then
-            local hrp = voidHrp()
             if hrp then
                 snapVoid(hrp)
+                -- if Desync OFF: stay in void (you SEE the void spam)
+                -- if Desync ON: RenderStep restores vfrSnap.cf (looks normal)
             end
-            if elapsed >= (vs.currentduration or 1) then
+            if elapsed >= (vs.currentduration or 0.3) then
                 vs.phase = "shoot"
                 vs.currentduration = randVs(vs.shoot_min, vs.shoot_max)
                 vs.lastswitch = now
+                if hrp and vfrSnap.cf then
+                    pcall(function() hrp.CFrame = vfrSnap.cf end)
+                end
                 clrVoidSnap()
             end
         end
     end
 
-    -- phase timer + snap on heartbeat
     RunService.Heartbeat:Connect(function()
         pcall(tickVoidSpam)
     end)
+
+
 
     -- Level / WinStreak spoof loop
     task.spawn(function()
@@ -3934,7 +4519,10 @@ function initLunaraExtras()
     }
 end
 
--- Boot Lunara extras (no extra locals - register limit)
+-- Boot extras (separate functions = fresh local limit)
+pcall(function()
+    initMiscExtras()
+end)
 pcall(function()
     initLunaraExtras()
 end)
